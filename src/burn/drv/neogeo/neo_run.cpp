@@ -2188,8 +2188,11 @@ static void WriteIO2(INT32 nOffset, UINT8 byteValue)
 	switch (nOffset) {
 		case 0x01:
 		case 0x11: // Shadow latch, causes the palette to nearly halfen in brightness
-			NeoRecalcPalette = 1;
-			bNeoDarkenPalette = (nOffset == 0x11) ? 1 : 0;
+			// games write this every frame, only recalc the whole palette when it changes
+			if (bNeoDarkenPalette != ((nOffset == 0x11) ? 1 : 0)) {
+				NeoRecalcPalette = 1;
+				bNeoDarkenPalette = (nOffset == 0x11) ? 1 : 0;
+			}
 			//bprintf(PRINT_NORMAL, _T("  - Darken Palette %X (0x%02X, at scanline %i).\n"), bNeoDarkenPalette, byteValue, NeoCurrentScanline());
 			break;
 

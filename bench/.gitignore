@@ -1,0 +1,7 @@
+*.o
+*.a
+fbneo_bench.elf
+fbneo_bench.rpx
+fbneo_bench.wuhb
+fbneo_bench.nm.txt
+fbneo_bench_linux

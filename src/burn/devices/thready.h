@@ -6,6 +6,7 @@
 #define THREADY_PTHREAD		3 // anything that supports pthreads (linux, android, not apple)
 #define THREADY_PTHREADAPL	4 // apple pthreads
 #define THREADY_0THREAD		5 // neither of the above.. (no threading!)
+#define THREADY_WIIU		6 // Wii U coreinit threads
 
 #define STARTUP_FRAMES 180
 #define THREADY_CHECK_CB_TIME 0
@@ -32,6 +33,26 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
+#endif
+
+#if !defined(THREADY) && defined(__wiiu__) && !defined(THREADY_DISABLE_WIIU)
+#define THREADY THREADY_WIIU
+// wut's headers need C++11 and the core builds as gnu++98, so declare the few coreinit calls
+// used here, with opaque structs of the right size (OSThread 0x6a0, OSSemaphore 0x20 bytes)
+#include <malloc.h>
+extern "C" {
+typedef struct { UINT8 data[0x6a0]; } __attribute__((aligned(8))) OSThread;
+typedef struct { UINT8 data[0x20]; } __attribute__((aligned(8))) OSSemaphore;
+typedef int (*OSThreadEntryPointFn)(int argc, const char **argv);
+int OSCreateThread(OSThread *thread, OSThreadEntryPointFn entry, INT32 argc, char *argv, void *stack, UINT32 stackSize, INT32 priority, UINT32 attributes);
+INT32 OSResumeThread(OSThread *thread);
+int OSJoinThread(OSThread *thread, int *threadResult);
+void OSSetThreadName(OSThread *thread, const char *name);
+void OSInitSemaphore(OSSemaphore *semaphore, INT32 count);
+INT32 OSWaitSemaphore(OSSemaphore *semaphore);
+INT32 OSSignalSemaphore(OSSemaphore *semaphore);
+}
+#define OS_THREAD_ATTRIB_AFFINITY_CPU2 (1 << 2)
 #endif
 
 #ifndef THREADY
@@ -632,6 +653,117 @@ static void *ThreadyProc(void*) {
 	return 0;
 }
 #endif // THREADY_PTHREADAPL
+
+
+#if (THREADY == THREADY_WIIU)
+// the emulation runs on the main thread (core 1), so the worker gets core 2 to itself
+#define THREADY_WIIU_STACK (256 * 1024)
+static int ThreadyProc(int, const char **);
+
+struct threadystruct
+{
+	INT32 thready_ok;
+	INT32 ok_to_thread;
+	INT32 ok_to_wait;
+	volatile INT32 end_thread;
+	OSThread *our_thread;
+	UINT8 *our_stack;
+	OSSemaphore our_event;
+	OSSemaphore wait_event;
+	void (*our_callback)();
+	INT32 startup_frame;
+
+	void init(void (*thread_callback)()) {
+		thready_ok = 0;
+		ok_to_thread = 0;
+		ok_to_wait = 0;
+		end_thread = 0;
+		startup_frame = 0;
+
+		our_callback = thread_callback;
+
+		OSInitSemaphore(&our_event, 0);
+		OSInitSemaphore(&wait_event, 0);
+
+		our_thread = (OSThread *)memalign(16, sizeof(OSThread));
+		our_stack = (UINT8 *)memalign(16, THREADY_WIIU_STACK);
+		if (our_thread && our_stack &&
+			OSCreateThread(our_thread, ThreadyProc, 0, NULL, our_stack + THREADY_WIIU_STACK, THREADY_WIIU_STACK, 16, OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
+			OSSetThreadName(our_thread, "fbneo thready");
+			OSResumeThread(our_thread);
+			thready_ok = 1;
+			ok_to_thread = 1;
+		} else {
+			bprintf(0, _T("Thready: failure to create thread - falling back to single-thread mode!\n"));
+			free(our_thread);
+			free(our_stack);
+			our_thread = NULL;
+			our_stack = NULL;
+		}
+	}
+
+	void exit() {
+		if (thready_ok) {
+			end_thread = 1;
+			OSSignalSemaphore(&our_event);
+			OSJoinThread(our_thread, NULL);
+			free(our_thread);
+			free(our_stack);
+			our_thread = NULL;
+			our_stack = NULL;
+			thready_ok = 0;
+		}
+	}
+
+	void scan() {
+		SCAN_VAR(startup_frame);
+	}
+
+	void reset() {
+		startup_frame = STARTUP_FRAMES;
+	}
+
+	void set_threading(INT32 value) {
+		ok_to_thread = value;
+	}
+
+	void notify() {
+		if (startup_frame > 0) {
+			// run in synchronous mode for startup_frame frames
+			startup_frame--;
+			our_callback();
+			return;
+		}
+		if (thready_ok && ok_to_thread) {
+			OSSignalSemaphore(&our_event);
+			ok_to_wait = 1;
+		} else {
+			// fallback to single-threaded mode
+			our_callback();
+		}
+	}
+	void notify_wait() {
+		if (ok_to_wait) {
+			OSWaitSemaphore(&wait_event);
+			ok_to_wait = 0;
+		}
+	}
+};
+
+static threadystruct thready;
+
+static int ThreadyProc(int, const char **) {
+	do {
+		OSWaitSemaphore(&thready.our_event);
+		if (thready.end_thread)
+			return 0;
+		thready.our_callback();
+		OSSignalSemaphore(&thready.wait_event);
+	} while (1);
+
+	return 0;
+}
+#endif // THREADY_WIIU
 
 
 #if (THREADY == THREADY_0THREAD)

@@ -1,18 +1,12 @@
 /*
- * fbneo_player - a minimal SDL2 libretro frontend for the statically-linked FBNeo core,
- * so a game (default sfiii3) can actually be played and watched. Unlike bench.c (headless,
- * scripted input, hashes), this presents video to the screen, plays audio, and reads a live
- * controller. It links the full core via wut's linker, which handles the large core that
- * RetroArch's RPX layout cannot.
+ * fbneo_player - a minimal SDL2 libretro frontend for the statically-linked FBNeo core, so a game
+ * can actually be played. The generic frontend shell (window, controllers, config, the on-screen
+ * picker, the rotation-aware blit, the help screen) lives in picker/ and has no FBNeo/libretro
+ * knowledge; this file is the thin glue: the libretro callbacks and the per-game load/run loop.
  *
- * It shows an on-screen game picker (SDL2_ttf, font bundled in the wuhb /content), reads the
- * rom directory from a config file it creates on first run, and loads/unloads each game so
- * you can return to the picker in-game with + and - (Start+Select).
- *
- * Paths on Wii U (fs: default device; standard per-app data dir):
- *   roms    <roms= in config>, default fs:/vol/external01/wiiu/fbneo/roms/<set>.zip
- *   config  fs:/vol/external01/wiiu/fbneo/player/config.txt  (created if missing)
- *   font    fs:/vol/content/Roboto-Regular.ttf               (bundled in the wuhb)
+ * Paths on Wii U:  roms  <content= in config>, default fs:/vol/external01/wiiu/fbneo/roms/<set>.zip
+ *                  config fs:/vol/external01/wiiu/fbneo/config.txt   (created on first run)
+ *                  font   fs:/vol/content/Roboto-Regular.ttf         (bundled in the wuhb)
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -21,12 +15,15 @@
 #include <stdarg.h>
 #include <time.h>
 #include <SDL.h>
-#include <SDL_ttf.h>
-#include <dirent.h>
-#include <sys/stat.h>
 #include "libretro.h"
+#include "picker/picker.h"
 #ifdef __WIIU__
-#include <coreinit/debug.h>
+#include <coreinit/time.h>
+#include <whb/log.h>
+#include <whb/log_cafe.h>
+#include <whb/log_udp.h>
+static OSTime g_log_epoch;	/* set in main() before the first plog() */
+static void log_udp_deinit(void) { WHBLogUdpDeinit(); }	/* void wrapper for atexit */
 #endif
 
 #ifdef __WIIU__
@@ -34,13 +31,10 @@
 #define FONT_FILE "fs:/vol/content/Roboto-Regular.ttf"	/* bundled in the wuhb */
 #else
 #define DATA_DIR  "."
-#define FONT_FILE "Roboto-Regular.ttf"
+#define FONT_FILE "picker/Roboto-Regular.ttf"
 #endif
-#define ROMS_DIR    DATA_DIR "/roms"
-#define SYS_DIR     DATA_DIR "/system"
-#define PLAYER_DIR  DATA_DIR "/player"
-#define SAVE_DIR    DATA_DIR "/player/saves"
-#define CONFIG_FILE DATA_DIR "/player/config.txt"
+#define SYS_DIR  DATA_DIR "/system"
+#define SAVE_DIR DATA_DIR "/player/saves"
 
 static void plog(const char *fmt, ...)
 {
@@ -50,7 +44,12 @@ static void plog(const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
 #ifdef __WIIU__
-    OSReport("[player] %s\n", buf);
+    /* Tagged "[fbneo ...]" like bench.c so the shared UDP listener (port 4405) can tell these
+     * lines apart; WHBLogPrintf goes to both the Cafe/OSReport console and the UDP broadcast. */
+    {
+        uint64_t ms = OSTicksToMilliseconds(OSGetSystemTime() - g_log_epoch);
+        WHBLogPrintf("[fbneo +%u.%03u] player: %s", (unsigned)(ms / 1000), (unsigned)(ms % 1000), buf);
+    }
 #else
     fprintf(stderr, "[player] %s\n", buf);
 #endif
@@ -61,27 +60,11 @@ time_t time(time_t *t) { time_t v = 1527811200; if (t) *t = v; return v; }
 
 static enum retro_pixel_format pixfmt = RETRO_PIXEL_FORMAT_0RGB1555;
 static const char *g_sys = SYS_DIR, *g_save = SAVE_DIR;
-static unsigned rotation;
-
-static SDL_Window   *win;
-static SDL_Renderer *ren;
-static SDL_Texture  *tex;
-static unsigned      tex_w, tex_h;
-static int           win_w = 1280, win_h = 720;
+static unsigned rotation;		/* libretro SET_ROTATION (90-degree CCW steps) */
 static SDL_AudioDeviceID adev;
-static SDL_GameController *pads[2];	/* [0]=player 1, [1]=player 2 */
-static int           want_quit;		/* quit the app */
-static int           want_menu;		/* leave the running game, back to the picker */
-static char          g_roms[768];	/* rom dir, from config.txt */
-static char          g_autoload[48];	/* optional: boot straight into this set */
-static int           g_rotate = 1;	/* apply the game's rotation (off = fill screen) */
-static TTF_Font     *g_font;
-#define MAXSETS 1024
-static char          sets[MAXSETS][48];
-static char          syslabel[MAXSETS][28];	/* system name per set, shown in the picker */
-static int           nsets;
+static int want_quit, want_menu;
 
-extern const char   *fbneo_system(const char *name);	/* C++ shim, fbneo_names.cpp */
+extern const char *fbneo_system(const char *name);	/* C++ shim, fbneo_names.cpp */
 
 /* ---- libretro callbacks ---- */
 
@@ -89,8 +72,7 @@ static void core_log(enum retro_log_level level, const char *fmt, ...)
 {
     char buf[1024];
     va_list ap;
-    if (level < RETRO_LOG_WARN)
-        return;
+    if (level < RETRO_LOG_WARN) return;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
@@ -134,43 +116,7 @@ static Uint32 sdl_fmt_for(enum retro_pixel_format f)
 
 static void video_refresh(const void *data, unsigned w, unsigned h, size_t pitch)
 {
-    SDL_Rect dst;
-    int ww, wh;
-    double sa, da;
-    if (!data) return; /* duped frame */
-
-    if (!tex || w != tex_w || h != tex_h) {
-        if (tex) SDL_DestroyTexture(tex);
-        tex = SDL_CreateTexture(ren, sdl_fmt_for(pixfmt), SDL_TEXTUREACCESS_STREAMING, w, h);
-        tex_w = w; tex_h = h;
-        plog("video %ux%u pitch=%u fmt=%d", w, h, (unsigned)pitch, (int)pixfmt);
-    }
-    SDL_UpdateTexture(tex, NULL, data, (int)pitch);
-
-    SDL_GetRendererOutputSize(ren, &ww, &wh);
-    {
-        /* libretro rotation is in 90-degree CCW steps; vertical games (mushisam etc.) use 1 or 3.
-           Letterbox to the DISPLAYED aspect (swapped for 90/270) then rotate with RenderCopyEx. */
-        unsigned rot = g_rotate ? rotation : 0;
-        int rot90 = (rot == 1 || rot == 3);
-        sa = rot90 ? (double)h / (double)w : (double)w / (double)h;
-        da = (double)ww / (double)wh;
-        if (da > sa) { dst.h = wh; dst.w = (int)(wh * sa); dst.x = (ww - dst.w) / 2; dst.y = 0; }
-        else         { dst.w = ww; dst.h = (int)(ww / sa); dst.x = 0; dst.y = (wh - dst.h) / 2; }
-
-        SDL_RenderClear(ren);
-        if (rot90) {
-            /* the texture's footprint is dst with w/h swapped and centred; rotating it fills dst */
-            SDL_Rect r;
-            r.w = dst.h; r.h = dst.w;
-            r.x = dst.x + (dst.w - r.w) / 2;
-            r.y = dst.y + (dst.h - r.h) / 2;
-            SDL_RenderCopyEx(ren, tex, NULL, &r, rot == 1 ? 270.0 : 90.0, NULL, SDL_FLIP_NONE);
-        } else {
-            SDL_RenderCopyEx(ren, tex, NULL, &dst, rot == 2 ? 180.0 : 0.0, NULL, SDL_FLIP_NONE);
-        }
-        SDL_RenderPresent(ren);
-    }
+    picker_present(data, w, h, (unsigned)pitch, sdl_fmt_for(pixfmt), picker_rotate() ? rotation : 0);
 }
 
 static void audio_sample(int16_t l, int16_t r)
@@ -185,54 +131,17 @@ static size_t audio_batch(const int16_t *d, size_t frames)
     return frames;
 }
 
-static void open_pads(void)
-{
-    int i;
-    for (i = 0; i < SDL_NumJoysticks(); i++) {
-        SDL_GameController *g;
-        if (!SDL_IsGameController(i)) continue;
-        g = SDL_GameControllerOpen(i);
-        if (!g) continue;
-        if (g == pads[0] || g == pads[1]) continue;	/* already assigned */
-        if      (!pads[0]) pads[0] = g;
-        else if (!pads[1]) pads[1] = g;
-        else SDL_GameControllerClose(g);		/* only two players */
-    }
-    plog("controllers: p1=%d p2=%d", pads[0] != NULL, pads[1] != NULL);
-}
-
-static int exit_hold;
-
-static void input_poll(void)
-{
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_QUIT) want_quit = 1;
-        else if (e.type == SDL_CONTROLLERDEVICEADDED) open_pads();
-    }
-    /* either player holds + and - together (Start+Select) ~0.5s to leave to the game picker */
-    if ((pads[0] && SDL_GameControllerGetButton(pads[0], SDL_CONTROLLER_BUTTON_START)
-                 && SDL_GameControllerGetButton(pads[0], SDL_CONTROLLER_BUTTON_BACK)) ||
-        (pads[1] && SDL_GameControllerGetButton(pads[1], SDL_CONTROLLER_BUTTON_START)
-                 && SDL_GameControllerGetButton(pads[1], SDL_CONTROLLER_BUTTON_BACK))) {
-        if (++exit_hold >= 30) want_menu = 1;
-    } else {
-        exit_hold = 0;
-    }
-}
+static void input_poll(void) { picker_pump(&want_quit, &want_menu); }
 
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
     SDL_GameController *g;
     SDL_GameControllerButton b = SDL_CONTROLLER_BUTTON_INVALID;
     (void)index;
-    if (port > 1 || device != RETRO_DEVICE_JOYPAD)
-        return 0;
-    g = pads[port];
-    if (!g)
-        return 0;
-    /* left analog stick doubles the d-pad for directions */
-    {
+    if (port > 1 || device != RETRO_DEVICE_JOYPAD) return 0;
+    g = picker_pad((int)port);
+    if (!g) return 0;
+    {   /* left analog stick doubles the d-pad for directions */
         const int DZ = 12000;
         Sint16 ax = SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_LEFTX);
         Sint16 ay = SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_LEFTY);
@@ -241,10 +150,8 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
         if (id == RETRO_DEVICE_ID_JOYPAD_UP    && ay < -DZ) return 1;
         if (id == RETRO_DEVICE_ID_JOYPAD_DOWN  && ay >  DZ) return 1;
     }
-    if (id == RETRO_DEVICE_ID_JOYPAD_L2)
-        return SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000;
-    if (id == RETRO_DEVICE_ID_JOYPAD_R2)
-        return SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000;
+    if (id == RETRO_DEVICE_ID_JOYPAD_L2) return SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000;
+    if (id == RETRO_DEVICE_ID_JOYPAD_R2) return SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000;
     switch (id) {
     case RETRO_DEVICE_ID_JOYPAD_UP:     b = SDL_CONTROLLER_BUTTON_DPAD_UP; break;
     case RETRO_DEVICE_ID_JOYPAD_DOWN:   b = SDL_CONTROLLER_BUTTON_DPAD_DOWN; break;
@@ -265,197 +172,7 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
     return SDL_GameControllerGetButton(g, b) ? 1 : 0;
 }
 
-static void mkdirs(const char *path)
-{
-    char tmp[800];
-    size_t i;
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for (i = 1; tmp[i]; i++)
-        if (tmp[i] == '/') { tmp[i] = 0; mkdir(tmp, 0777); tmp[i] = '/'; }
-    mkdir(tmp, 0777);
-}
-
-/* read the rom dir from config.txt; create the file with the default if it is missing */
-static void load_config(void)
-{
-    FILE *f;
-    char line[800];
-    snprintf(g_roms, sizeof(g_roms), "%s", ROMS_DIR);
-    f = fopen(CONFIG_FILE, "r");
-    if (f) {
-        while (fgets(line, sizeof(line), f)) {
-            line[strcspn(line, "\r\n")] = 0;
-            if (!strncmp(line, "roms=", 5) && line[5])
-                snprintf(g_roms, sizeof(g_roms), "%s", line + 5);
-            else if (!strncmp(line, "autoload=", 9))
-                snprintf(g_autoload, sizeof(g_autoload), "%s", line + 9);
-            else if (!strncmp(line, "rotate=", 7))
-                g_rotate = strncmp(line + 7, "off", 3) != 0;
-        }
-        fclose(f);
-        plog("config roms=%s rotate=%d autoload=%s", g_roms, g_rotate, g_autoload);
-    } else {
-        mkdirs(PLAYER_DIR);
-        f = fopen(CONFIG_FILE, "w");
-        if (f) {
-            fprintf(f,
-                "# fbneo player config\n"
-                "roms=%s\n"
-                "# rotate=on    # off = fill the screen without rotating (vertical games look sideways)\n"
-                "# autoload=sfiii3   # boot straight into one game\n",
-                g_roms);
-            fclose(f);
-            plog("created %s", CONFIG_FILE);
-        }
-    }
-}
-
-static int set_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
-
-static void scan_roms(void)
-{
-    DIR *d;
-    struct dirent *e;
-    nsets = 0;
-    d = opendir(g_roms);
-    if (!d) { plog("opendir %s failed", g_roms); return; }
-    while ((e = readdir(d)) != NULL && nsets < MAXSETS) {
-        const char *n = e->d_name;
-        size_t L = strlen(n);
-        if (L > 4 && n[L-4] == '.' &&
-            (n[L-3]=='z'||n[L-3]=='Z') && (n[L-2]=='i'||n[L-2]=='I') && (n[L-1]=='p'||n[L-1]=='P') &&
-            L - 4 < sizeof(sets[0])) {
-            memcpy(sets[nsets], n, L - 4);
-            sets[nsets][L - 4] = 0;
-            nsets++;
-        }
-    }
-    closedir(d);
-    qsort(sets, nsets, sizeof(sets[0]), set_cmp);
-    {
-        int i;
-        for (i = 0; i < nsets; i++) {
-            const char *sys = fbneo_system(sets[i]);	/* label after sort so indices match */
-            snprintf(syslabel[i], sizeof(syslabel[0]), "%s", (sys && *sys) ? sys : "");
-        }
-    }
-    plog("scanned %d sets in %s", nsets, g_roms);
-}
-
-/* ---- simple on-screen UI (SDL2_ttf) ---- */
-
-static void draw_text(int x, int y, SDL_Color c, const char *s)
-{
-    SDL_Surface *surf;
-    SDL_Texture *t;
-    SDL_Rect dst;
-    if (!g_font || !s || !*s) return;
-    surf = TTF_RenderUTF8_Blended(g_font, s, c);
-    if (!surf) return;
-    t = SDL_CreateTextureFromSurface(ren, surf);
-    dst.x = x; dst.y = y; dst.w = surf->w; dst.h = surf->h;
-    SDL_FreeSurface(surf);
-    if (t) { SDL_RenderCopy(ren, t, NULL, &dst); SDL_DestroyTexture(t); }
-}
-
-static int pad_btn(SDL_GameControllerButton b)
-{
-    int i;
-    for (i = 0; i < 2; i++)
-        if (pads[i] && SDL_GameControllerGetButton(pads[i], b)) return 1;
-    return 0;
-}
-
-static int pad_dir(int down)	/* d-pad or left stick, either player */
-{
-    int i;
-    for (i = 0; i < 2; i++) {
-        SDL_GameController *g = pads[i];
-        if (!g) continue;
-        if (SDL_GameControllerGetButton(g, down ? SDL_CONTROLLER_BUTTON_DPAD_DOWN : SDL_CONTROLLER_BUTTON_DPAD_UP)) return 1;
-        {
-            Sint16 ay = SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_LEFTY);
-            if (down ? (ay > 12000) : (ay < -12000)) return 1;
-        }
-    }
-    return 0;
-}
-
-static void show_msg(const char *a, const char *b)
-{
-    SDL_Color c = { 255, 120, 120, 255 };
-    Uint32 end = SDL_GetTicks() + 1600;
-    SDL_Event e;
-    while (SDL_GetTicks() < end) {
-        while (SDL_PollEvent(&e)) {}
-        SDL_SetRenderDrawColor(ren, 18, 18, 28, 255);
-        SDL_RenderClear(ren);
-        draw_text(80, 300, c, a);
-        draw_text(80, 344, c, b);
-        SDL_RenderPresent(ren);
-        SDL_Delay(16);
-    }
-}
-
-/* game picker: returns an index into sets[], or -1 to quit the app */
-static int pick_set(void)
-{
-    const int VIS = 15, ROWH = 36, X = 90, Y0 = 130;
-    SDL_Color head = {120,200,255,255}, white = {225,225,225,255}, hi = {255,215,70,255};
-    int sel = 0, top = 0, a_prev = 1, qhold = 0, armed = 0;
-    Uint32 nav_next = 0;
-    char buf[96];
-    SDL_Event ev;
-    for (;;) {
-        Uint32 now;
-        int a;
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_QUIT) { want_quit = 1; return -1; }
-            if (ev.type == SDL_CONTROLLERDEVICEADDED) open_pads();
-        }
-        /* hold + and - (once released) to quit the app */
-        if (pad_btn(SDL_CONTROLLER_BUTTON_START) && pad_btn(SDL_CONTROLLER_BUTTON_BACK)) {
-            if (armed && ++qhold >= 30) { want_quit = 1; return -1; }
-        } else { qhold = 0; armed = 1; }
-
-        now = SDL_GetTicks();
-        if (nsets > 0 && now >= nav_next && (pad_dir(0) || pad_dir(1))) {
-            sel = pad_dir(1) ? (sel + 1) % nsets : (sel - 1 + nsets) % nsets;
-            nav_next = now + 140;
-        }
-        if (!pad_dir(0) && !pad_dir(1)) nav_next = 0;
-
-        a = pad_btn(SDL_CONTROLLER_BUTTON_A) || pad_btn(SDL_CONTROLLER_BUTTON_B);
-        if (a && !a_prev && nsets > 0) return sel;
-        a_prev = a;
-
-        if (sel < top) top = sel;
-        if (sel >= top + VIS) top = sel - VIS + 1;
-
-        SDL_SetRenderDrawColor(ren, 18, 18, 28, 255);
-        SDL_RenderClear(ren);
-        draw_text(X, 48, head, "FBNeo  -  pick a game   (A/B play, Up/Down or stick, hold +/- quit)");
-        if (nsets == 0) {
-            draw_text(X, Y0, white, "No .zip roms found. Put sets in the rom folder:");
-            draw_text(X, Y0 + ROWH, white, g_roms);
-        } else {
-            int i;
-            for (i = 0; i < VIS && top + i < nsets; i++) {
-                int idx = top + i;
-                const char *pfx = idx == sel ? "> " : "   ";
-                if (syslabel[idx][0])
-                    snprintf(buf, sizeof(buf), "%s%s   (%s)", pfx, sets[idx], syslabel[idx]);
-                else
-                    snprintf(buf, sizeof(buf), "%s%s", pfx, sets[idx]);
-                draw_text(X, Y0 + i * ROWH, idx == sel ? hi : white, buf);
-            }
-            snprintf(buf, sizeof(buf), "%d / %d", sel + 1, nsets);
-            draw_text(X, Y0 + VIS * ROWH + 10, head, buf);
-        }
-        SDL_RenderPresent(ren);
-        SDL_Delay(16);
-    }
-}
+/* ---- one game ---- */
 
 static int load_and_play(const char *set)
 {
@@ -466,13 +183,13 @@ static int load_and_play(const char *set)
 
     pixfmt = RETRO_PIXEL_FORMAT_0RGB1555;
     want_menu = 0;
-    snprintf(path, sizeof(path), "%s/%s.zip", g_roms, set);
+    snprintf(path, sizeof(path), "%s/%s.zip", picker_content_dir(), set);
     memset(&game, 0, sizeof(game));
     game.path = path;
     plog("loading %s", path);
     if (!retro_load_game(&game)) {
         plog("retro_load_game FAILED %s", set);
-        show_msg("Failed to load:", set);
+        picker_message("Failed to load (wrong romset version?):", set);
         return 0;
     }
     retro_get_system_av_info(&av);
@@ -497,35 +214,29 @@ static int load_and_play(const char *set)
     }
 
     if (adev) { SDL_CloseAudioDevice(adev); adev = 0; }
-    if (tex)  { SDL_DestroyTexture(tex); tex = 0; tex_w = tex_h = 0; }
     retro_unload_game();
     return 1;
 }
 
 int main(int argc, char **argv)
 {
+    static const picker_cfg cfg = {
+        "FBNeo", "rom", DATA_DIR, FONT_FILE, "zip", fbneo_system,
+        "Rom sets must match FBNeo 1.0.0.3; Neo Geo needs neogeo.zip (BIOS)."
+    };
+    char autoload[64] = {0};
+    int rc;
     (void)argc; (void)argv;
+#ifdef __WIIU__
+    g_log_epoch = OSGetSystemTime();
+    WHBLogCafeInit();	/* mirror log lines to OSReport */
+    WHBLogUdpInit();	/* ...and broadcast them to the shared UDP listener (4405) */
+    atexit(log_udp_deinit);
+#endif
     plog("start");
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
-        plog("SDL_Init failed: %s", SDL_GetError());
-        return 1;
-    }
-    atexit(SDL_Quit);	/* release GX2 foreground on any exit so we return to the menu */
-    win = SDL_CreateWindow("fbneo", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           win_w, win_h, SDL_WINDOW_FULLSCREEN);
-    if (!win) { plog("CreateWindow: %s", SDL_GetError()); return 1; }
-    ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-    if (!ren) { plog("CreateRenderer: %s", SDL_GetError()); return 1; }
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    if (TTF_Init() == 0) {
-        g_font = TTF_OpenFont(FONT_FILE, 26);
-        if (!g_font) plog("font open failed (%s): %s", FONT_FILE, TTF_GetError());
-    } else {
-        plog("TTF_Init failed: %s", TTF_GetError());
-    }
-    open_pads();
-    load_config();
+    rc = picker_init(&cfg);
+    if (rc) { plog("picker_init failed (%d): %s", rc, SDL_GetError()); return 1; }
 
     retro_set_environment(environment);
     retro_set_video_refresh(video_refresh);
@@ -535,25 +246,20 @@ int main(int argc, char **argv)
     retro_set_input_state(input_state);
     retro_init();
 
+    snprintf(autoload, sizeof(autoload), "%s", picker_autoload());	/* boot straight into one game, once */
+
     while (!want_quit) {
-        int idx;
-        scan_roms();
-        if (g_autoload[0]) {		/* boot straight into one game, once */
-            char s[48];
-            snprintf(s, sizeof(s), "%s", g_autoload);
-            g_autoload[0] = 0;
-            load_and_play(s);
-            continue;
+        const char *set;
+        if (autoload[0]) { set = autoload; autoload[0] = 0; }
+        else {
+            set = picker_run();
+            if (!set) break;
         }
-        idx = pick_set();
-        if (idx < 0) break;
-        load_and_play(sets[idx]);
+        load_and_play(set);
     }
 
     plog("quit");
     retro_deinit();
-    if (g_font) TTF_CloseFont(g_font);
-    TTF_Quit();
-    SDL_Quit();
+    picker_quit();
     return 0;
 }

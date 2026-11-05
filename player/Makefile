@@ -31,15 +31,16 @@ wuhb: fbneo_player.rpx
 	    --name "FBNeo Player" --short-name FBNeoPlay --author fbneo_wiiu \
 	    --icon=icon.png --content=content
 
-fbneo_player.elf: player.c fbneo_names.cpp $(CORE_A)
+fbneo_player.elf: player.c picker/picker.c picker/picker.h fbneo_names.cpp $(CORE_A)
 	$(PPC_CC) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -D__WUT__ $(INCLUDES) $(SDL_CFLAGS) -isystem $(WUT_ROOT)/include -c player.c -o player_wiiu.o
+	$(PPC_CC) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -D__WUT__ $(SDL_CFLAGS) -isystem $(WUT_ROOT)/include -c picker/picker.c -o picker_wiiu.o
 	$(PPC_CXX) -O2 $(PPC_ARCH) -D__WIIU__ -c fbneo_names.cpp -o fbneo_names.o
 	$(PPC_CC) -O2 $(PPC_ARCH) -D__WIIU__ -D__WUT__ -DWIIU $(INCLUDES) -isystem $(WUT_ROOT)/include -c $(LRC_SRC) && \
 	    ar rcs lrc_wiiu.a $(notdir $(LRC_SRC:.c=.o)) && rm -f $(notdir $(LRC_SRC:.c=.o))
-	$(PPC_CXX) $(PPC_ARCH) -specs=$(WUT_ROOT)/share/wut.specs -L$(WUT_ROOT)/lib player_wiiu.o fbneo_names.o $(CORE_A) lrc_wiiu.a $(SDL_LIBS) -lm -o $@
+	$(PPC_CXX) $(PPC_ARCH) -specs=$(WUT_ROOT)/share/wut.specs -L$(WUT_ROOT)/lib player_wiiu.o picker_wiiu.o fbneo_names.o $(CORE_A) lrc_wiiu.a $(SDL_LIBS) -lwut -lm -o $@
 
 fbneo_player.rpx: fbneo_player.elf
 	elf2rpl $< $@
 
 clean:
-	rm -f player_wiiu.o fbneo_names.o lrc_wiiu.a fbneo_player.elf fbneo_player.rpx fbneo_player.wuhb
+	rm -f player_wiiu.o picker_wiiu.o fbneo_names.o lrc_wiiu.a fbneo_player.elf fbneo_player.rpx fbneo_player.wuhb

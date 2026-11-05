@@ -30,6 +30,8 @@
 #ifdef __WIIU__
 #include <coreinit/memexpheap.h>
 #include <coreinit/memheap.h>
+#include <coreinit/alarm.h>
+#include <coreinit/cache.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <whb/log.h>
@@ -394,19 +396,23 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
 
 
 /* ---- sampling profiler (Wii U, config profile=1) ----
- * A thread on core 0 suspends the emulation thread every millisecond, reads the PC and LR
- * from its saved context, and resumes it. Counts per PC are written to prof/<set>.txt for
- * offline symbolization against the ELF (the RPX text is loaded at its link address). */
+ * Interrupt-driven. A periodic OSAlarm fires ~1 kHz on the emulation core; wut hands the
+ * callback the INTERRUPTED OSContext, so ctx->srr0 is the exact PC the emulator was running
+ * when the timer fired (a SIGPROF-style sampler). Counts per PC go to prof/<set>.txt and over
+ * UDP, for offline symbolization against the ELF (RPX text loads at its link address).
+ *
+ * Why not a sampler thread + OSSuspendThread (the previous design): on this console a merely
+ * READY thread on a secondary core is scheduled only ~once/0.5 s regardless of core (0/2),
+ * priority (0/1/16) or sleep-vs-spin (measured: ~20-60 loop iters in 49 s every way), so it
+ * caught only 8 samples. The decrementer-driven alarm never touches the thread scheduler. */
 static int profile_on;
 #ifdef __WIIU__
 #define PROF_SLOTS 65536
 static uint32_t prof_pc[PROF_SLOTS], prof_count[PROF_SLOTS];
 static uint32_t prof_lr[PROF_SLOTS], prof_lr_count[PROF_SLOTS];
-static volatile int prof_active, prof_quit;
-static volatile uint32_t prof_samples, prof_missed;
-static OSThread *prof_target;
-static OSThread prof_thread;
-static uint8_t prof_stack[64 * 1024] __attribute__((aligned(16)));
+static volatile int prof_active;
+static volatile uint32_t prof_samples, prof_fires;	/* samples recorded / total alarm fires */
+static OSAlarm prof_alarm;
 
 static int is_code(uint32_t a) { return a >= 0x02000000 && a < 0x10000000; }
 
@@ -426,52 +432,61 @@ static void prof_add(uint32_t *keys, uint32_t *counts, uint32_t key)
     }
 }
 
-static int prof_main(int argc, const char **argv)
+/* Alarm callback: runs in interrupt context on the core that owns the alarm (the emulation
+ * core, since prof_start() arms it from the emu thread). ctx is the interrupted context, so
+ * ctx->srr0 is the emulator's PC. Does only array writes - no OS calls, nothing that blocks. */
+static void prof_alarm_cb(OSAlarm *alarm, OSContext *ctx)
 {
-    while (!prof_quit) {
-        OSSleepTicks(OSMicrosecondsToTicks(1000));
-        if (!prof_active)
-            continue;
-        OSSuspendThread(prof_target);
-        /* a thread on another core stops at its next reschedule: wait until it really is off the CPU */
-        int i;
-        for (i = 0; i < 200 && (prof_target->state & OS_THREAD_STATE_RUNNING); i++)
-            OSSleepTicks(OSMicrosecondsToTicks(10));
-        if (!(prof_target->state & OS_THREAD_STATE_RUNNING)) {
-            uint32_t pc = prof_target->context.srr0, lr = prof_target->context.lr;
-            /* Cemu keeps srr0 in host byte order in the saved context; instructions are 4-byte
-             * aligned and a byte-swapped code address never is */
-            if ((pc & 3) || !is_code(pc))
-                pc = __builtin_bswap32(pc);
-            prof_add(prof_pc, prof_count, pc);
-            if (is_code(lr))
-                prof_add(prof_lr, prof_lr_count, lr);
-            prof_samples++;
-        } else {
-            prof_missed++;
-        }
-        OSResumeThread(prof_target);
-    }
-    return 0;
+    (void)alarm;
+    prof_fires++;
+    if (!prof_active || !ctx)
+        return;
+    uint32_t pc = ctx->srr0, lr = ctx->lr;
+    /* Cemu stores srr0 host-endian; a byte-swapped code address is never 4-byte aligned */
+    if ((pc & 3) || !is_code(pc))
+        pc = __builtin_bswap32(pc);
+    prof_add(prof_pc, prof_count, pc);
+    if (is_code(lr))
+        prof_add(prof_lr, prof_lr_count, lr);
+    prof_samples++;
 }
 
 static void prof_start(void)
 {
-    static int started;
-    if (!started) {
-        prof_target = OSGetCurrentThread();
-        OSCreateThread(&prof_thread, prof_main, 0, NULL, prof_stack + sizeof(prof_stack), sizeof(prof_stack), 0,
-                       OS_THREAD_ATTRIB_AFFINITY_CPU0);
-        OSSetThreadName(&prof_thread, "fbneo_bench profiler");
-        OSResumeThread(&prof_thread);
-        started = 1;
+    static int created;
+    if (!created) {
+        OSCreateAlarm(&prof_alarm);
+        created = 1;
     }
     memset(prof_pc, 0, sizeof(prof_pc));
     memset(prof_count, 0, sizeof(prof_count));
     memset(prof_lr, 0, sizeof(prof_lr));
     memset(prof_lr_count, 0, sizeof(prof_lr_count));
-    prof_samples = prof_missed = 0;
+    prof_samples = prof_fires = 0;
+    __sync_synchronize();
     prof_active = 1;
+    __sync_synchronize();
+    /* periodic 1 ms alarm, armed from the emulation thread so it fires on that core and the
+     * callback sees the emulator's interrupted PC */
+    OSTime iv = OSMicrosecondsToTicks(1000);
+    OSSetPeriodicAlarm(&prof_alarm, OSGetTime() + iv, iv, prof_alarm_cb);
+}
+
+/* Emit the top n entries of a (keys,counts) table over UDP, highest first. Destructive:
+ * zeroes each count as it is emitted, so call only after the SD file is written. */
+static void prof_emit_top(const char *tag, const char *set, uint32_t *keys, uint32_t *counts, int n)
+{
+    int k;
+    for (k = 0; k < n; k++) {
+        int i, best = -1;
+        uint32_t bestc = 0;
+        for (i = 0; i < PROF_SLOTS; i++)
+            if (counts[i] > bestc) { bestc = counts[i]; best = i; }
+        if (best < 0)
+            break;
+        blog("%s %s %02d %08x %u", tag, set, k, (unsigned)keys[best], (unsigned)bestc);
+        counts[best] = 0;
+    }
 }
 
 static void prof_write(const char *set)
@@ -480,19 +495,27 @@ static void prof_write(const char *set)
     FILE *f;
     int i;
     prof_active = 0;
+    OSCancelAlarm(&prof_alarm);
+    __sync_synchronize();
     OSSleepTicks(OSMillisecondsToTicks(3));
+    /* SD copy (full histogram) first, so the destructive UDP emit below can't lose data */
     snprintf(path, sizeof(path), "%s/prof/%s.txt", bench_dir, set);
     f = fopen(path, "w");
-    if (!f)
-        return;
-    fprintf(f, "samples %u missed %u\n", (unsigned)prof_samples, (unsigned)prof_missed);
-    for (i = 0; i < PROF_SLOTS; i++)
-        if (prof_pc[i])
-            fprintf(f, "pc %08x %u\n", (unsigned)prof_pc[i], (unsigned)prof_count[i]);
-    for (i = 0; i < PROF_SLOTS; i++)
-        if (prof_lr[i])
-            fprintf(f, "lr %08x %u\n", (unsigned)prof_lr[i], (unsigned)prof_lr_count[i]);
-    fclose(f);
+    if (f) {
+        fprintf(f, "samples %u fires %u\n", (unsigned)prof_samples, (unsigned)prof_fires);
+        for (i = 0; i < PROF_SLOTS; i++)
+            if (prof_pc[i])
+                fprintf(f, "pc %08x %u\n", (unsigned)prof_pc[i], (unsigned)prof_count[i]);
+        for (i = 0; i < PROF_SLOTS; i++)
+            if (prof_lr[i])
+                fprintf(f, "lr %08x %u\n", (unsigned)prof_lr[i], (unsigned)prof_lr_count[i]);
+        fclose(f);
+    }
+    /* UDP copy, so the result is readable without the SD card: a summary line plus the hot
+     * PCs/LRs. prof_fires ~= run_ms means the 1 kHz alarm fired as intended. */
+    blog("PROF %s samples=%u fires=%u", set, (unsigned)prof_samples, (unsigned)prof_fires);
+    prof_emit_top("PROFPC", set, prof_pc, prof_count, 24);
+    prof_emit_top("PROFLR", set, prof_lr, prof_lr_count, 12);
 }
 #else
 static void prof_start(void) {}
@@ -768,9 +791,11 @@ int main(int argc, char **argv)
     }
     fclose(f);
 
-    /* resume: skip finished sets, and report the one an earlier launch died in */
+    /* resume: skip finished sets, and report the one an earlier launch died in.
+     * A profiling run always re-runs its whole list (you re-profile the same sets), so it
+     * ignores progress.txt; otherwise a second run would skip everything (ran=0). */
     snprintf(path, sizeof(path), "%s/progress.txt", bench_dir);
-    f = fopen(path, "r");
+    f = profile_on ? NULL : fopen(path, "r");
     if (f) {
         while (fgets(buf, sizeof(buf), f)) {
             char name[64];

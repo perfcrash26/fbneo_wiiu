@@ -17,12 +17,19 @@ LRC_SRC  := $(addprefix $(LRC)/,streams/file_stream.c streams/file_stream_transf
             file/file_path_io.c file/retro_dirent.c vfs/vfs_implementation.c string/stdstring.c \
             encodings/encoding_utf.c compat/compat_strl.c compat/fopen_utf8.c compat/compat_strcasestr.c time/rtime.c)
 
-SDL_CFLAGS := $(shell $(SDL2CFG) --cflags)
-SDL_LIBS   := $(shell $(SDL2CFG) --libs)
+PKGCFG     := PKG_CONFIG_PATH=$(PORTLIBS)/lib/pkgconfig:/opt/devkitpro/portlibs/ppc/lib/pkgconfig pkg-config
+SDL_CFLAGS := $(shell $(SDL2CFG) --cflags) $(shell $(PKGCFG) --cflags SDL2_ttf)
+SDL_LIBS   := $(shell $(PKGCFG) --libs --static SDL2_ttf)
 
-.PHONY: wiiu clean
+.PHONY: wiiu wuhb clean
 
 wiiu: fbneo_player.rpx
+
+# package a Wii U menu app: FBNeo icon + Roboto font bundled in /content
+wuhb: fbneo_player.rpx
+	wuhbtool fbneo_player.rpx fbneo_player.wuhb \
+	    --name "FBNeo Player" --short-name FBNeoPlay --author fbneo_wiiu \
+	    --icon=icon.png --content=content
 
 fbneo_player.elf: player.c $(CORE_A)
 	$(PPC_CC) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -D__WUT__ $(INCLUDES) $(SDL_CFLAGS) -isystem $(WUT_ROOT)/include -c player.c -o player_wiiu.o
@@ -34,4 +41,4 @@ fbneo_player.rpx: fbneo_player.elf
 	elf2rpl $< $@
 
 clean:
-	rm -f player_wiiu.o lrc_wiiu.a fbneo_player.elf fbneo_player.rpx
+	rm -f player_wiiu.o lrc_wiiu.a fbneo_player.elf fbneo_player.rpx fbneo_player.wuhb

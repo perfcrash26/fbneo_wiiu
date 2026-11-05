@@ -73,10 +73,15 @@ static SDL_GameController *pads[2];	/* [0]=player 1, [1]=player 2 */
 static int           want_quit;		/* quit the app */
 static int           want_menu;		/* leave the running game, back to the picker */
 static char          g_roms[768];	/* rom dir, from config.txt */
+static char          g_autoload[48];	/* optional: boot straight into this set */
+static int           g_rotate = 1;	/* apply the game's rotation (off = fill screen) */
 static TTF_Font     *g_font;
 #define MAXSETS 1024
 static char          sets[MAXSETS][48];
+static char          syslabel[MAXSETS][28];	/* system name per set, shown in the picker */
 static int           nsets;
+
+extern const char   *fbneo_system(const char *name);	/* C++ shim, fbneo_names.cpp */
 
 /* ---- libretro callbacks ---- */
 
@@ -143,15 +148,29 @@ static void video_refresh(const void *data, unsigned w, unsigned h, size_t pitch
     SDL_UpdateTexture(tex, NULL, data, (int)pitch);
 
     SDL_GetRendererOutputSize(ren, &ww, &wh);
-    /* letterbox keeping the game's aspect */
-    sa = (double)w / (double)h;
-    da = (double)ww / (double)wh;
-    if (da > sa) { dst.h = wh; dst.w = (int)(wh * sa); dst.x = (ww - dst.w) / 2; dst.y = 0; }
-    else         { dst.w = ww; dst.h = (int)(ww / sa); dst.x = 0; dst.y = (wh - dst.h) / 2; }
+    {
+        /* libretro rotation is in 90-degree CCW steps; vertical games (mushisam etc.) use 1 or 3.
+           Letterbox to the DISPLAYED aspect (swapped for 90/270) then rotate with RenderCopyEx. */
+        unsigned rot = g_rotate ? rotation : 0;
+        int rot90 = (rot == 1 || rot == 3);
+        sa = rot90 ? (double)h / (double)w : (double)w / (double)h;
+        da = (double)ww / (double)wh;
+        if (da > sa) { dst.h = wh; dst.w = (int)(wh * sa); dst.x = (ww - dst.w) / 2; dst.y = 0; }
+        else         { dst.w = ww; dst.h = (int)(ww / sa); dst.x = 0; dst.y = (wh - dst.h) / 2; }
 
-    SDL_RenderClear(ren);
-    SDL_RenderCopy(ren, tex, NULL, &dst);
-    SDL_RenderPresent(ren);
+        SDL_RenderClear(ren);
+        if (rot90) {
+            /* the texture's footprint is dst with w/h swapped and centred; rotating it fills dst */
+            SDL_Rect r;
+            r.w = dst.h; r.h = dst.w;
+            r.x = dst.x + (dst.w - r.w) / 2;
+            r.y = dst.y + (dst.h - r.h) / 2;
+            SDL_RenderCopyEx(ren, tex, NULL, &r, rot == 1 ? 270.0 : 90.0, NULL, SDL_FLIP_NONE);
+        } else {
+            SDL_RenderCopyEx(ren, tex, NULL, &dst, rot == 2 ? 180.0 : 0.0, NULL, SDL_FLIP_NONE);
+        }
+        SDL_RenderPresent(ren);
+    }
 }
 
 static void audio_sample(int16_t l, int16_t r)
@@ -268,14 +287,23 @@ static void load_config(void)
             line[strcspn(line, "\r\n")] = 0;
             if (!strncmp(line, "roms=", 5) && line[5])
                 snprintf(g_roms, sizeof(g_roms), "%s", line + 5);
+            else if (!strncmp(line, "autoload=", 9))
+                snprintf(g_autoload, sizeof(g_autoload), "%s", line + 9);
+            else if (!strncmp(line, "rotate=", 7))
+                g_rotate = strncmp(line + 7, "off", 3) != 0;
         }
         fclose(f);
-        plog("config roms=%s", g_roms);
+        plog("config roms=%s rotate=%d autoload=%s", g_roms, g_rotate, g_autoload);
     } else {
         mkdirs(PLAYER_DIR);
         f = fopen(CONFIG_FILE, "w");
         if (f) {
-            fprintf(f, "# fbneo player config\nroms=%s\n", g_roms);
+            fprintf(f,
+                "# fbneo player config\n"
+                "roms=%s\n"
+                "# rotate=on    # off = fill the screen without rotating (vertical games look sideways)\n"
+                "# autoload=sfiii3   # boot straight into one game\n",
+                g_roms);
             fclose(f);
             plog("created %s", CONFIG_FILE);
         }
@@ -304,6 +332,13 @@ static void scan_roms(void)
     }
     closedir(d);
     qsort(sets, nsets, sizeof(sets[0]), set_cmp);
+    {
+        int i;
+        for (i = 0; i < nsets; i++) {
+            const char *sys = fbneo_system(sets[i]);	/* label after sort so indices match */
+            snprintf(syslabel[i], sizeof(syslabel[0]), "%s", (sys && *sys) ? sys : "");
+        }
+    }
     plog("scanned %d sets in %s", nsets, g_roms);
 }
 
@@ -407,7 +442,11 @@ static int pick_set(void)
             int i;
             for (i = 0; i < VIS && top + i < nsets; i++) {
                 int idx = top + i;
-                snprintf(buf, sizeof(buf), "%s%s", idx == sel ? "> " : "   ", sets[idx]);
+                const char *pfx = idx == sel ? "> " : "   ";
+                if (syslabel[idx][0])
+                    snprintf(buf, sizeof(buf), "%s%s   (%s)", pfx, sets[idx], syslabel[idx]);
+                else
+                    snprintf(buf, sizeof(buf), "%s%s", pfx, sets[idx]);
                 draw_text(X, Y0 + i * ROWH, idx == sel ? hi : white, buf);
             }
             snprintf(buf, sizeof(buf), "%d / %d", sel + 1, nsets);
@@ -499,6 +538,13 @@ int main(int argc, char **argv)
     while (!want_quit) {
         int idx;
         scan_roms();
+        if (g_autoload[0]) {		/* boot straight into one game, once */
+            char s[48];
+            snprintf(s, sizeof(s), "%s", g_autoload);
+            g_autoload[0] = 0;
+            load_and_play(s);
+            continue;
+        }
         idx = pick_set();
         if (idx < 0) break;
         load_and_play(sets[idx]);

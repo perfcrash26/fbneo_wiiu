@@ -29,6 +29,8 @@ typedef struct {
     const char *ext;           /* file extension to list, without the dot, e.g. "zip" */
     const char *(*label_for)(const char *name); /* optional per-item tag (e.g. system), or NULL */
     const char *help_extra;    /* optional extra line on the help screen (e.g. version note), or NULL */
+    const char *const *controls; /* optional NULL-terminated lines describing the app's in-game button
+                                  * map, shown on the help screen under the generic menu controls; or NULL */
 } picker_cfg;
 
 /* Bring up SDL (video+audio+gamecontroller), a fullscreen window+renderer, the font, controllers,

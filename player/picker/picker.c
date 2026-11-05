@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>	/* strcasecmp */
 #include <dirent.h>
 #include <sys/stat.h>
 #include <SDL_ttf.h>
@@ -24,9 +25,9 @@ static char g_content[768];
 static char g_autoload[64];
 static int  g_rotate = 1;
 
-static char g_sets[MAXSETS][48];
-static char g_label[MAXSETS][28];
-static int  g_nsets;
+static char *g_sets[MAXSETS];		/* item names (malloc'd, any length) */
+static char  g_label[MAXSETS][28];
+static int   g_nsets;
 
 /* ---- small helpers ---- */
 
@@ -36,7 +37,9 @@ static void mkdirs(const char *path)
     size_t i;
     snprintf(tmp, sizeof(tmp), "%s", path);
     for (i = 1; tmp[i]; i++)
-        if (tmp[i] == '/') { tmp[i] = 0; mkdir(tmp, 0777); tmp[i] = '/'; }
+        if (tmp[i] == '/' && tmp[i - 1] != ':') {	/* not the "fs:" device separator */
+            tmp[i] = 0; mkdir(tmp, 0777); tmp[i] = '/';
+        }
     mkdir(tmp, 0777);
 }
 
@@ -211,25 +214,33 @@ static void load_config(void)
     mkdirs(g_content);   /* improvement: make sure the content dir exists on first run */
 }
 
-static int set_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static int set_cmp(const void *a, const void *b)   /* case-insensitive, over the malloc'd name pointers */
+{
+    return strcasecmp(*(const char *const *)a, *(const char *const *)b);
+}
 
 static void scan_content(void)
 {
     DIR *d;
     struct dirent *e;
     size_t extlen = strlen(g_cfg->ext);
+    int i;
+    for (i = 0; i < g_nsets; i++) { free(g_sets[i]); g_sets[i] = NULL; }   /* names are malloc'd */
     g_nsets = 0;
     d = opendir(g_content);
     if (!d) return;
     while ((e = readdir(d)) != NULL && g_nsets < MAXSETS) {
         const char *n = e->d_name;
-        size_t L = strlen(n);
-        if (L > extlen + 1 && n[L - extlen - 1] == '.' &&
-            !strcasecmp(n + L - extlen, g_cfg->ext) && L - extlen - 1 < sizeof(g_sets[0])) {
-            memcpy(g_sets[g_nsets], n, L - extlen - 1);
-            g_sets[g_nsets][L - extlen - 1] = 0;
-            g_nsets++;
-        }
+        size_t L = strlen(n), stem;
+        char *name;
+        if (L <= extlen + 1 || n[L - extlen - 1] != '.' || strcasecmp(n + L - extlen, g_cfg->ext) != 0)
+            continue;
+        stem = L - extlen - 1;                       /* name without ".<ext>" - any length */
+        name = (char *)malloc(stem + 1);
+        if (!name) continue;
+        memcpy(name, n, stem);
+        name[stem] = 0;
+        g_sets[g_nsets++] = name;
     }
     closedir(d);
     qsort(g_sets, g_nsets, sizeof(g_sets[0]), set_cmp);
@@ -248,20 +259,29 @@ static void draw_help(void)
 {
     SDL_Color head = {120,200,255,255}, white = {225,225,225,255}, dim = {160,160,170,255};
     char l[256];
-    int y = 110;
+    int y = 86, i;
     SDL_SetRenderDrawColor(g_ren, 18, 18, 28, 255);
     SDL_RenderClear(g_ren);
-    snprintf(l, sizeof(l), "%s  -  how to add %ss", g_cfg->app_name, g_cfg->content_noun);
-    draw_text(90, 48, head, l);
-    snprintf(l, sizeof(l), "1. Put your %s .%s files in this folder:", g_cfg->content_noun, g_cfg->ext);
-    draw_text(90, y, white, l); y += 40;
-    draw_text(130, y, head, g_content); y += 48;
-    snprintf(l, sizeof(l), "   (fs:/vol/external01 is the SD card root)"); draw_text(90, y, dim, l); y += 48;
-    draw_text(90, y, white, "2. To use a different folder, edit:"); y += 40;
-    snprintf(l, sizeof(l), "   %s/config.txt   ->   content=<path>", g_cfg->data_dir);
-    draw_text(130, y, head, l); y += 48;
-    if (g_cfg->help_extra && *g_cfg->help_extra) { draw_text(90, y, white, g_cfg->help_extra); y += 48; }
-    draw_text(90, y + 20, dim, "Press A to continue");
+    snprintf(l, sizeof(l), "%s  -  help", g_cfg->app_name);
+    draw_text(90, 40, head, l);
+
+    /* where content goes + how to change the folder */
+    snprintf(l, sizeof(l), "Put %s .%s files in this folder:", g_cfg->content_noun, g_cfg->ext);
+    draw_text(90, y, white, l); y += 34;
+    draw_text(120, y, head, g_content); y += 32;
+    draw_text(90, y, dim, "(fs:/vol/external01 is the SD card root)"); y += 38;
+    draw_text(90, y, white, "Use a different folder: edit the content= line of"); y += 34;
+    snprintf(l, sizeof(l), "%s/config.txt", g_cfg->data_dir); draw_text(120, y, head, l); y += 38;
+    if (g_cfg->help_extra && *g_cfg->help_extra) { draw_text(90, y, dim, g_cfg->help_extra); y += 38; }
+
+    /* controls: the generic menu keys, then the app's in-game map */
+    draw_text(90, y, head, "Menu:"); y += 32;
+    draw_text(120, y, white, "Up/Down or left stick move   A start   Y help   hold +/- quit"); y += 40;
+    if (g_cfg->controls) {
+        draw_text(90, y, head, "In game:"); y += 32;
+        for (i = 0; g_cfg->controls[i]; i++) { draw_text(120, y, white, g_cfg->controls[i]); y += 32; }
+    }
+    draw_text(90, y + 14, dim, "Press A to continue");
     SDL_RenderPresent(g_ren);
 }
 
@@ -287,7 +307,7 @@ const char *picker_run(void)
 {
     const int VIS = 15, ROWH = 36, X = 90, Y0 = 130;
     SDL_Color head = {120,200,255,255}, white = {225,225,225,255}, hi = {255,215,70,255};
-    int sel = 0, top = 0, a_prev = 1, y_prev = 1, qhold = 0, armed = 0;
+    int sel = 0, top = 0, a_prev = 1, y_prev = 1, qhold = 0, armed = 0, dir_prev = 0;
     Uint32 nav_next = 0;
     char buf[128];
     SDL_Event ev;
@@ -311,11 +331,12 @@ const char *picker_run(void)
         y_prev = y;
 
         now = SDL_GetTicks();
-        if (now >= nav_next && (pad_dir(0) || pad_dir(1))) {
-            sel = pad_dir(1) ? (sel + 1) % g_nsets : (sel - 1 + g_nsets) % g_nsets;
-            nav_next = now + 140;
+        {   /* up/down: a step on the press, then repeats after 400 ms every 80 ms */
+            int dir = pad_dir(1) ? 1 : (pad_dir(0) ? -1 : 0);
+            if (dir && dir != dir_prev)      { sel = (sel + dir + g_nsets) % g_nsets; nav_next = now + 400; }
+            else if (dir && now >= nav_next) { sel = (sel + dir + g_nsets) % g_nsets; nav_next = now + 80; }
+            dir_prev = dir;
         }
-        if (!pad_dir(0) && !pad_dir(1)) nav_next = 0;
 
         a = pad_btn(SDL_CONTROLLER_BUTTON_A) || pad_btn(SDL_CONTROLLER_BUTTON_B);
         if (a && !a_prev) return g_sets[sel];
@@ -369,6 +390,8 @@ void picker_quit(void)
 {
     int i;
     if (g_tex) { SDL_DestroyTexture(g_tex); g_tex = NULL; g_tex_w = g_tex_h = 0; }
+    for (i = 0; i < g_nsets; i++) { free(g_sets[i]); g_sets[i] = NULL; }
+    g_nsets = 0;
     for (i = 0; i < 2; i++) if (g_pads[i]) { SDL_GameControllerClose(g_pads[i]); g_pads[i] = NULL; }
     if (g_font) { TTF_CloseFont(g_font); g_font = NULL; }
     TTF_Quit();

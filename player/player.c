@@ -220,9 +220,18 @@ static int load_and_play(const char *set)
 
 int main(int argc, char **argv)
 {
+    static const char *const fbneo_controls[] = {
+        "Move: D-pad or left stick",
+        "Buttons: A B X Y face, L R shoulders, L2 R2 triggers",
+        "Start: +   Coin/Select: -",
+        "Return to this menu: hold + and - together",
+        "2 players: GamePad, Pro Controller, or Wiimote+Classic",
+        NULL
+    };
     static const picker_cfg cfg = {
         "FBNeo", "rom", DATA_DIR, FONT_FILE, "zip", fbneo_system,
-        "Rom sets must match FBNeo 1.0.0.3; Neo Geo needs neogeo.zip (BIOS)."
+        "Rom sets must match FBNeo 1.0.0.3; Neo Geo needs neogeo.zip (BIOS).",
+        fbneo_controls
     };
     char autoload[64] = {0};
     int rc;

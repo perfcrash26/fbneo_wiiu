@@ -41,6 +41,9 @@ The host app keeps `main()` and its own content loop and calls the picker as a t
 - `cfg.ext` — the file extension to list (no dot).
 - `cfg.label_for(name)` — optional per-item tag shown as `name   (tag)`; return `NULL`/`""` for none.
 - `cfg.content_noun` / `cfg.app_name` / `cfg.help_extra` — wording for the header and help screen.
+- `cfg.controls` — optional NULL-terminated lines describing your app's in-game button map; shown on the
+  help screen under the generic menu controls. The help screen (empty-state and `Y`) is the one place a
+  user learns where content goes, how to change the folder, and the controls — there is no separate splash.
 - Your content loop: call `picker_pump(&want_quit, &want_menu)` each frame, read inputs via
   `picker_pad(port)`, and show video with `picker_present(data, w, h, pitch, sdl_fmt, rot_ccw)`.
 

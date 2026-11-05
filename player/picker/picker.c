@@ -281,6 +281,8 @@ static void draw_help(void)
         draw_text(90, y, head, "In game:"); y += 32;
         for (i = 0; g_cfg->controls[i]; i++) { draw_text(120, y, white, g_cfg->controls[i]); y += 32; }
     }
+    y += 8;
+    draw_text(90, y, dim, "HOME does not exit - hold +/- in this menu to quit."); y += 34;
     draw_text(90, y + 14, dim, "Press A to continue");
     SDL_RenderPresent(g_ren);
 }
@@ -339,7 +341,17 @@ const char *picker_run(void)
         }
 
         a = pad_btn(SDL_CONTROLLER_BUTTON_A) || pad_btn(SDL_CONTROLLER_BUTTON_B);
-        if (a && !a_prev) return g_sets[sel];
+        if (a && !a_prev) {
+            /* draw a "Starting" frame before returning: the host's content load can take several
+             * seconds, and nothing repaints during it, so this avoids a black "is it hung?" screen */
+            SDL_SetRenderDrawColor(g_ren, 18, 18, 28, 255);
+            SDL_RenderClear(g_ren);
+            snprintf(buf, sizeof(buf), "Starting  %s", g_sets[sel]);
+            draw_text(X, 300, hi, buf);
+            draw_text(X, 344, white, "loading, please wait...");
+            SDL_RenderPresent(g_ren);
+            return g_sets[sel];
+        }
         a_prev = a;
 
         if (sel < top) top = sel;

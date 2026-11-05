@@ -562,6 +562,16 @@ static INT32 DrvFrame()
 		DrvDoReset();
 	}
 
+#ifdef CV1K_FORCE_DIPS
+	/* A/B test lever (off in normal builds): force Dip B bits so the Speed Hacks / Thread Blitter
+	 * defaults can be benchmarked without a frontend DIP UI. 0x02=Speed Hacks, 0x01=Thread Blitter.
+	 * Forced every frame before the DIP reads below; nBurnCPUSpeedAdjust change re-applies it. */
+	if ((DrvDips[1] & (CV1K_FORCE_DIPS)) != (CV1K_FORCE_DIPS)) {
+		DrvDips[1] |= (CV1K_FORCE_DIPS);
+		nPrevCPUTenth = ~DrvDips[3];	/* force the setup block below to re-run with the new dips */
+	}
+#endif
+
 	// check if cpu rate changes here..
 	if (nPrevBurnCPUSpeedAdjust != nBurnCPUSpeedAdjust || DrvDips[3] != nPrevCPUTenth) {
 		bprintf(0, _T("Setting CPU Clock selection.\n"));

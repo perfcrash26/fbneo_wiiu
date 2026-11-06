@@ -230,7 +230,7 @@ int main(int argc, char **argv)
     };
     static const picker_cfg cfg = {
         "FBNeo", "rom", DATA_DIR, FONT_FILE, "zip", fbneo_system,
-        "Rom sets must match FBNeo 1.0.0.3; Neo Geo needs neogeo.zip (BIOS).",
+        "Romsets must match FBNeo v1.0.0.3 (~Oct-2026 set); Neo Geo needs neogeo.zip",
         fbneo_controls
     };
     char autoload[64] = {0};

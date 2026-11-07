@@ -451,6 +451,87 @@ static void prof_alarm_cb(OSAlarm *alarm, OSContext *ctx)
     prof_samples++;
 }
 
+#ifdef CV1K_PROF
+/* ---- Level-1 CV1000 profiling: per-subsystem frame accounting + per-core utilization ----
+ * The per-subsystem times (cpu / ymz / draw / blitwait / total) are accumulated in d_cv1k.cpp
+ * (also built -DCV1K_PROF). Here we add a per-core idle sampler: a lowest-priority (31) spinner
+ * on each of cores 0/1/2 that only runs when its core is otherwise idle, so it costs the
+ * emulator nothing and its accumulated runtime measures that core's idle time (nulldc's
+ * sampler_wiiu.cpp technique). Reset per steady window; emitted as [cv1k-prof] lines. */
+extern unsigned long long g_cv1k_prof_cpu, g_cv1k_prof_ymz, g_cv1k_prof_draw, g_cv1k_prof_blitwait, g_cv1k_prof_total;
+extern unsigned g_cv1k_prof_frames;
+
+static OSThread cvp_spinner[3];
+static uint8_t  cvp_spin_stack[3][16 * 1024] __attribute__((aligned(16)));
+static volatile uint64_t cvp_idle[3];   /* ticks each core spent idle (spinner ran) */
+static uint64_t cvp_idle_mark[3];
+static volatile int cvp_stop;
+static int cvp_started;
+static OSTime cvp_span0;
+
+static int cvp_spinner_main(int which, const char **argv)
+{
+    (void)argv;
+    OSTime last = OSGetSystemTime();
+    const OSTime gap = OSMicrosecondsToTicks(20);   /* a bigger gap means something else ran on this core */
+    while (!cvp_stop) {
+        const OSTime t = OSGetSystemTime();
+        if (t - last < gap)
+            cvp_idle[which] += (uint64_t)(t - last);
+        last = t;
+    }
+    return 0;
+}
+
+static void cv1k_prof_start(void)
+{
+    g_cv1k_prof_cpu = g_cv1k_prof_ymz = g_cv1k_prof_draw = g_cv1k_prof_blitwait = g_cv1k_prof_total = 0;
+    g_cv1k_prof_frames = 0;
+    /* spinners are created once and left running for the whole process (priority 31 costs nothing);
+     * no stop/join, which hung on a console in nulldc. Each window reads an idle delta. */
+    if (!cvp_started) {
+        static const uint32_t aff[3] = { OS_THREAD_ATTRIB_AFFINITY_CPU0, OS_THREAD_ATTRIB_AFFINITY_CPU1,
+                                         OS_THREAD_ATTRIB_AFFINITY_CPU2 };
+        int c;
+        cvp_stop = 0;
+        for (c = 0; c < 3; c++)
+            if (OSCreateThread(&cvp_spinner[c], cvp_spinner_main, c, NULL,
+                               cvp_spin_stack[c] + sizeof(cvp_spin_stack[c]), sizeof(cvp_spin_stack[c]), 31, aff[c]))
+                OSResumeThread(&cvp_spinner[c]);
+        cvp_started = 1;
+    }
+    cvp_idle_mark[0] = cvp_idle[0];
+    cvp_idle_mark[1] = cvp_idle[1];
+    cvp_idle_mark[2] = cvp_idle[2];
+    cvp_span0 = OSGetSystemTime();
+}
+
+static void cv1k_prof_report(const char *set)
+{
+    OSTime span = OSGetSystemTime() - cvp_span0;
+    double spanus = (double)OSTicksToMicroseconds(span);
+    unsigned f = g_cv1k_prof_frames ? g_cv1k_prof_frames : 1;
+    double tot  = (double)OSTicksToMicroseconds((OSTime)g_cv1k_prof_total);
+    double cpu  = (double)OSTicksToMicroseconds((OSTime)g_cv1k_prof_cpu);
+    double ymz  = (double)OSTicksToMicroseconds((OSTime)g_cv1k_prof_ymz);
+    double draw = (double)OSTicksToMicroseconds((OSTime)g_cv1k_prof_draw);
+    double wait = (double)OSTicksToMicroseconds((OSTime)g_cv1k_prof_blitwait);
+    double other = tot - cpu - ymz - draw - wait;
+    double den = tot > 0 ? tot : 1;
+    uint64_t id0 = cvp_idle[0] - cvp_idle_mark[0], id1 = cvp_idle[1] - cvp_idle_mark[1], id2 = cvp_idle[2] - cvp_idle_mark[2];
+    if (other < 0) other = 0;
+    if (spanus <= 0) spanus = 1;
+    blog("CV1KPROF %s frames=%u frame_ms=%.3f cpu_ms=%.3f ymz_ms=%.3f draw_ms=%.3f blitwait_ms=%.3f other_ms=%.3f",
+         set, f, tot / 1000.0 / f, cpu / 1000.0 / f, ymz / 1000.0 / f, draw / 1000.0 / f, wait / 1000.0 / f, other / 1000.0 / f);
+    blog("CV1KPROF %s pct_of_frame cpu=%.1f ymz=%.1f draw=%.1f blitwait=%.1f other=%.1f",
+         set, 100 * cpu / den, 100 * ymz / den, 100 * draw / den, 100 * wait / den, 100 * other / den);
+    blog("CV1KUTIL %s busy_pct core0=%.1f core1=%.1f core2=%.1f",
+         set, 100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id0) / spanus,
+         100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id1) / spanus,
+         100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id2) / spanus);
+}
+#endif /* CV1K_PROF */
+
 static void prof_start(void)
 {
     static int created;
@@ -458,6 +539,9 @@ static void prof_start(void)
         OSCreateAlarm(&prof_alarm);
         created = 1;
     }
+#ifdef CV1K_PROF
+    cv1k_prof_start();
+#endif
     memset(prof_pc, 0, sizeof(prof_pc));
     memset(prof_count, 0, sizeof(prof_count));
     memset(prof_lr, 0, sizeof(prof_lr));
@@ -516,6 +600,9 @@ static void prof_write(const char *set)
     blog("PROF %s samples=%u fires=%u", set, (unsigned)prof_samples, (unsigned)prof_fires);
     prof_emit_top("PROFPC", set, prof_pc, prof_count, 24);
     prof_emit_top("PROFLR", set, prof_lr, prof_lr_count, 12);
+#ifdef CV1K_PROF
+    cv1k_prof_report(set);
+#endif
 }
 #else
 static void prof_start(void) {}

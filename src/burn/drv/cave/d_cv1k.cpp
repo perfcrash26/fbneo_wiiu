@@ -9,6 +9,20 @@
 #include "rtc9701.h"
 #include "ymz770.h"
 
+#ifdef CV1K_PROF
+// Level-1 per-subsystem frame accounting (bench builds only; off in normal builds). The bench
+// (bench.c, -DCV1K_PROF) resets these at the start of the steady window and emits them as a
+// [cv1k-prof] line. OSGetSystemTime is declared locally so this gnu++98 TU needn't pull in wut's
+// C++11 coreinit headers (the same trick thready.h uses); the accumulators are extern "C" so the
+// C bench can read them. Only OSGetSystemTime is called here - no blocking/OS calls in the path.
+extern "C" {
+long long OSGetSystemTime(void);
+unsigned long long g_cv1k_prof_cpu, g_cv1k_prof_ymz, g_cv1k_prof_draw, g_cv1k_prof_blitwait, g_cv1k_prof_total;
+unsigned g_cv1k_prof_frames;
+}
+#define CVP_ACC(a, t0) (g_cv1k_prof_##a += (unsigned long long)(OSGetSystemTime() - (t0)))
+#endif
+
 #define SH3_CLOCK (12800000 * 8)
 
 static UINT8 *AllMem;
@@ -620,6 +634,10 @@ static INT32 DrvFrame()
 		hold_coin.checklow(1, DrvInputs[0], 1<<3, 2);
 	}
 
+#ifdef CV1K_PROF
+	long long _cvp_frame = OSGetSystemTime();
+#endif
+
 	Sh3NewFrame();
 
 	INT32 nInterleave = 240;
@@ -628,15 +646,27 @@ static INT32 DrvFrame()
 
 	Sh3Open(0);
 
+#ifdef CV1K_PROF
+	long long _cvp_cpu = OSGetSystemTime();
+#endif
 	for (INT32 i = 0; i < nInterleave; i++)
 	{
 		CPU_RUN(0, Sh3);
 	}
+#ifdef CV1K_PROF
+	CVP_ACC(cpu, _cvp_cpu);
+#endif
 
 	Sh3SetIRQLine(2, CPU_IRQSTATUS_HOLD);
 
 	if (pBurnSoundOut) {
+#ifdef CV1K_PROF
+		long long _cvp_ymz = OSGetSystemTime();
+#endif
 		ymz770_update(pBurnSoundOut, nBurnSoundLen);
+#ifdef CV1K_PROF
+		CVP_ACC(ymz, _cvp_ymz);
+#endif
 	}
 
 	nExtraCycles[0] = nCyclesDone[0] - nCyclesTotal[0];
@@ -646,12 +676,29 @@ static INT32 DrvFrame()
 	rtc9701_once_per_frame();
 
 	if (DrvDips[1] & 4) { // Thread Sync: Before Draw
+#ifdef CV1K_PROF
+		long long _cvp_wait = OSGetSystemTime();
+#endif
 		epic12_wait_blitterthread();
+#ifdef CV1K_PROF
+		CVP_ACC(blitwait, _cvp_wait);
+#endif
 	}
 
 	if (pBurnDraw) {
+#ifdef CV1K_PROF
+		long long _cvp_draw = OSGetSystemTime();
+#endif
 		BurnDrvRedraw();
+#ifdef CV1K_PROF
+		CVP_ACC(draw, _cvp_draw);
+#endif
 	}
+
+#ifdef CV1K_PROF
+	CVP_ACC(total, _cvp_frame);
+	g_cv1k_prof_frames++;
+#endif
 
 	return 0;
 }

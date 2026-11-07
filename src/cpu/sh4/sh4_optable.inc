@@ -1,0 +1,738 @@
+// GENERATED from sh4.cpp execute_one* - do not edit by hand.
+// A function-pointer dispatch table mirroring the interpreter (Tier 1 Phase 1a).
+typedef void (*sh3op)(const UINT16);
+static void op_nul(const UINT16) { }   // unmatched opcode: interpreter switch fell through (no-op)
+static sh3op sh3_decode_0000(const UINT16 opcode)
+{
+	switch(opcode & 0xff)
+	{
+		// 0x00
+		case 0x00:  return (sh3op)&NOP;
+		case 0x10:  return (sh3op)&NOP;
+		case 0x20:  return (sh3op)&NOP;
+		case 0x30:  return (sh3op)&NOP;
+		case 0x40:  return (sh3op)&NOP;
+		case 0x50:  return (sh3op)&NOP;
+		case 0x60:  return (sh3op)&NOP;
+		case 0x70:  return (sh3op)&NOP;
+		case 0x80:  return (sh3op)&NOP;
+		case 0x90:  return (sh3op)&NOP;
+		case 0xa0:  return (sh3op)&NOP;
+		case 0xb0:  return (sh3op)&NOP;
+		case 0xc0:  return (sh3op)&NOP;
+		case 0xd0:  return (sh3op)&NOP;
+		case 0xe0:  return (sh3op)&NOP;
+		case 0xf0:  return (sh3op)&NOP;
+		// 0x10
+		case 0x01:  return (sh3op)&NOP;
+		case 0x11:  return (sh3op)&NOP;
+		case 0x21:  return (sh3op)&NOP;
+		case 0x31:  return (sh3op)&NOP;
+		case 0x41:  return (sh3op)&NOP;
+		case 0x51:  return (sh3op)&NOP;
+		case 0x61:  return (sh3op)&NOP;
+		case 0x71:  return (sh3op)&NOP;
+		case 0x81:  return (sh3op)&NOP;
+		case 0x91:  return (sh3op)&NOP;
+		case 0xa1:  return (sh3op)&NOP;
+		case 0xb1:  return (sh3op)&NOP;
+		case 0xc1:  return (sh3op)&NOP;
+		case 0xd1:  return (sh3op)&NOP;
+		case 0xe1:  return (sh3op)&NOP;
+		case 0xf1:  return (sh3op)&NOP;
+		// 0x20
+		case 0x02:  return (sh3op)&STCSR;
+		case 0x12:  return (sh3op)&STCGBR;
+		case 0x22:  return (sh3op)&STCVBR;
+		case 0x32:  return (sh3op)&STCSSR;
+		case 0x42:  return (sh3op)&STCSPC;
+		case 0x52:  return (sh3op)&NOP;
+		case 0x62:  return (sh3op)&NOP;
+		case 0x72:  return (sh3op)&NOP;
+		case 0x82:  return (sh3op)&STCRBANK;
+		case 0x92:  return (sh3op)&STCRBANK;
+		case 0xa2:  return (sh3op)&STCRBANK;
+		case 0xb2:  return (sh3op)&STCRBANK;
+		case 0xc2:  return (sh3op)&STCRBANK;
+		case 0xd2:  return (sh3op)&STCRBANK;
+		case 0xe2:  return (sh3op)&STCRBANK;
+		case 0xf2:  return (sh3op)&STCRBANK;
+		// 0x30
+		case 0x03:  return (sh3op)&BSRF;
+		case 0x13:  return (sh3op)&NOP;
+		case 0x23:  return (sh3op)&BRAF;
+		case 0x33:  return (sh3op)&NOP;
+		case 0x43:  return (sh3op)&NOP;
+		case 0x53:  return (sh3op)&NOP;
+		case 0x63:  return (sh3op)&NOP;
+		case 0x73:  return (sh3op)&NOP;
+		case 0x83:  return (sh3op)&PREFM;
+		case 0x93:  return (sh3op)&TODO;
+		case 0xa3:  return (sh3op)&TODO;
+		case 0xb3:  return (sh3op)&TODO;
+		case 0xc3:  return (sh3op)&MOVCAL;
+		case 0xd3:  return (sh3op)&NOP;
+		case 0xe3:  return (sh3op)&NOP;
+		case 0xf3:  return (sh3op)&NOP;
+		// 0x40
+		case 0x04:  return (sh3op)&MOVBS0;
+		case 0x14:  return (sh3op)&MOVBS0;
+		case 0x24:  return (sh3op)&MOVBS0;
+		case 0x34:  return (sh3op)&MOVBS0;
+		case 0x44:  return (sh3op)&MOVBS0;
+		case 0x54:  return (sh3op)&MOVBS0;
+		case 0x64:  return (sh3op)&MOVBS0;
+		case 0x74:  return (sh3op)&MOVBS0;
+		case 0x84:  return (sh3op)&MOVBS0;
+		case 0x94:  return (sh3op)&MOVBS0;
+		case 0xa4:  return (sh3op)&MOVBS0;
+		case 0xb4:  return (sh3op)&MOVBS0;
+		case 0xc4:  return (sh3op)&MOVBS0;
+		case 0xd4:  return (sh3op)&MOVBS0;
+		case 0xe4:  return (sh3op)&MOVBS0;
+		case 0xf4:  return (sh3op)&MOVBS0;
+		// 0x50
+		case 0x05:  return (sh3op)&MOVWS0;
+		case 0x15:  return (sh3op)&MOVWS0;
+		case 0x25:  return (sh3op)&MOVWS0;
+		case 0x35:  return (sh3op)&MOVWS0;
+		case 0x45:  return (sh3op)&MOVWS0;
+		case 0x55:  return (sh3op)&MOVWS0;
+		case 0x65:  return (sh3op)&MOVWS0;
+		case 0x75:  return (sh3op)&MOVWS0;
+		case 0x85:  return (sh3op)&MOVWS0;
+		case 0x95:  return (sh3op)&MOVWS0;
+		case 0xa5:  return (sh3op)&MOVWS0;
+		case 0xb5:  return (sh3op)&MOVWS0;
+		case 0xc5:  return (sh3op)&MOVWS0;
+		case 0xd5:  return (sh3op)&MOVWS0;
+		case 0xe5:  return (sh3op)&MOVWS0;
+		case 0xf5:  return (sh3op)&MOVWS0;
+		// 0x60
+		case 0x06:  return (sh3op)&MOVLS0;
+		case 0x16:  return (sh3op)&MOVLS0;
+		case 0x26:  return (sh3op)&MOVLS0;
+		case 0x36:  return (sh3op)&MOVLS0;
+		case 0x46:  return (sh3op)&MOVLS0;
+		case 0x56:  return (sh3op)&MOVLS0;
+		case 0x66:  return (sh3op)&MOVLS0;
+		case 0x76:  return (sh3op)&MOVLS0;
+		case 0x86:  return (sh3op)&MOVLS0;
+		case 0x96:  return (sh3op)&MOVLS0;
+		case 0xa6:  return (sh3op)&MOVLS0;
+		case 0xb6:  return (sh3op)&MOVLS0;
+		case 0xc6:  return (sh3op)&MOVLS0;
+		case 0xd6:  return (sh3op)&MOVLS0;
+		case 0xe6:  return (sh3op)&MOVLS0;
+		case 0xf6:  return (sh3op)&MOVLS0;
+		// 0x70
+		case 0x07:  return (sh3op)&MULL;
+		case 0x17:  return (sh3op)&MULL;
+		case 0x27:  return (sh3op)&MULL;
+		case 0x37:  return (sh3op)&MULL;
+		case 0x47:  return (sh3op)&MULL;
+		case 0x57:  return (sh3op)&MULL;
+		case 0x67:  return (sh3op)&MULL;
+		case 0x77:  return (sh3op)&MULL;
+		case 0x87:  return (sh3op)&MULL;
+		case 0x97:  return (sh3op)&MULL;
+		case 0xa7:  return (sh3op)&MULL;
+		case 0xb7:  return (sh3op)&MULL;
+		case 0xc7:  return (sh3op)&MULL;
+		case 0xd7:  return (sh3op)&MULL;
+		case 0xe7:  return (sh3op)&MULL;
+		case 0xf7:  return (sh3op)&MULL;
+		// 0x80
+		case 0x08:  return (sh3op)&CLRT;
+		case 0x18:  return (sh3op)&SETT;
+		case 0x28:  return (sh3op)&CLRMAC;
+		case 0x38:  return (sh3op)&TODO;
+		case 0x48:  return (sh3op)&CLRS;
+		case 0x58:  return (sh3op)&SETS;
+		case 0x68:  return (sh3op)&NOP;
+		case 0x78:  return (sh3op)&NOP;
+		case 0x88:  return (sh3op)&CLRT;
+		case 0x98:  return (sh3op)&SETT;
+		case 0xa8:  return (sh3op)&CLRMAC;
+		case 0xb8:  return (sh3op)&TODO;
+		case 0xc8:  return (sh3op)&CLRS;
+		case 0xd8:  return (sh3op)&SETS;
+		case 0xe8:  return (sh3op)&NOP;
+		case 0xf8:  return (sh3op)&NOP;
+		// 0x90
+		case 0x09:  return (sh3op)&NOP;
+		case 0x19:  return (sh3op)&DIV0U;
+		case 0x29:  return (sh3op)&MOVT;
+		case 0x39:  return (sh3op)&NOP;
+		case 0x49:  return (sh3op)&NOP;
+		case 0x59:  return (sh3op)&DIV0U;
+		case 0x69:  return (sh3op)&MOVT;
+		case 0x79:  return (sh3op)&NOP;
+		case 0x89:  return (sh3op)&NOP;
+		case 0x99:  return (sh3op)&DIV0U;
+		case 0xa9:  return (sh3op)&MOVT;
+		case 0xb9:  return (sh3op)&NOP;
+		case 0xc9:  return (sh3op)&NOP;
+		case 0xd9:  return (sh3op)&DIV0U;
+		case 0xe9:  return (sh3op)&MOVT;
+		case 0xf9:  return (sh3op)&NOP;
+		// 0xa0
+		case 0x0a:  return (sh3op)&STSMACH;
+		case 0x1a:  return (sh3op)&STSMACL;
+		case 0x2a:  return (sh3op)&STSPR;
+		case 0x3a:  return (sh3op)&STCSGR;
+		case 0x4a:  return (sh3op)&NOP;
+		case 0x5a:  return (sh3op)&STSFPUL;
+		case 0x6a:  return (sh3op)&STSFPSCR;
+		case 0x7a:  return (sh3op)&STCDBR;
+		case 0x8a:  return (sh3op)&STSMACH;
+		case 0x9a:  return (sh3op)&STSMACL;
+		case 0xaa:  return (sh3op)&STSPR;
+		case 0xba:  return (sh3op)&STCSGR;
+		case 0xca:  return (sh3op)&NOP;
+		case 0xda:  return (sh3op)&STSFPUL;
+		case 0xea:  return (sh3op)&STSFPSCR;
+		case 0xfa:  return (sh3op)&STCDBR;
+		// 0xb0
+		case 0x0b:  return (sh3op)&RTS;
+		case 0x1b:  return (sh3op)&SLEEP;
+		case 0x2b:  return (sh3op)&RTE;
+		case 0x3b:  return (sh3op)&NOP;
+		case 0x4b:  return (sh3op)&RTS;
+		case 0x5b:  return (sh3op)&SLEEP;
+		case 0x6b:  return (sh3op)&RTE;
+		case 0x7b:  return (sh3op)&NOP;
+		case 0x8b:  return (sh3op)&RTS;
+		case 0x9b:  return (sh3op)&SLEEP;
+		case 0xab:  return (sh3op)&RTE;
+		case 0xbb:  return (sh3op)&NOP;
+		case 0xcb:  return (sh3op)&RTS;
+		case 0xdb:  return (sh3op)&SLEEP;
+		case 0xeb:  return (sh3op)&RTE;
+		case 0xfb:  return (sh3op)&NOP;
+		// 0xc0
+		case 0x0c:  return (sh3op)&MOVBL0;
+		case 0x1c:  return (sh3op)&MOVBL0;
+		case 0x2c:  return (sh3op)&MOVBL0;
+		case 0x3c:  return (sh3op)&MOVBL0;
+		case 0x4c:  return (sh3op)&MOVBL0;
+		case 0x5c:  return (sh3op)&MOVBL0;
+		case 0x6c:  return (sh3op)&MOVBL0;
+		case 0x7c:  return (sh3op)&MOVBL0;
+		case 0x8c:  return (sh3op)&MOVBL0;
+		case 0x9c:  return (sh3op)&MOVBL0;
+		case 0xac:  return (sh3op)&MOVBL0;
+		case 0xbc:  return (sh3op)&MOVBL0;
+		case 0xcc:  return (sh3op)&MOVBL0;
+		case 0xdc:  return (sh3op)&MOVBL0;
+		case 0xec:  return (sh3op)&MOVBL0;
+		case 0xfc:  return (sh3op)&MOVBL0;
+		// 0xd0
+		case 0x0d:  return (sh3op)&MOVWL0;
+		case 0x1d:  return (sh3op)&MOVWL0;
+		case 0x2d:  return (sh3op)&MOVWL0;
+		case 0x3d:  return (sh3op)&MOVWL0;
+		case 0x4d:  return (sh3op)&MOVWL0;
+		case 0x5d:  return (sh3op)&MOVWL0;
+		case 0x6d:  return (sh3op)&MOVWL0;
+		case 0x7d:  return (sh3op)&MOVWL0;
+		case 0x8d:  return (sh3op)&MOVWL0;
+		case 0x9d:  return (sh3op)&MOVWL0;
+		case 0xad:  return (sh3op)&MOVWL0;
+		case 0xbd:  return (sh3op)&MOVWL0;
+		case 0xcd:  return (sh3op)&MOVWL0;
+		case 0xdd:  return (sh3op)&MOVWL0;
+		case 0xed:  return (sh3op)&MOVWL0;
+		case 0xfd:  return (sh3op)&MOVWL0;
+		// 0xe0
+		case 0x0e:  return (sh3op)&MOVLL0;
+		case 0x1e:  return (sh3op)&MOVLL0;
+		case 0x2e:  return (sh3op)&MOVLL0;
+		case 0x3e:  return (sh3op)&MOVLL0;
+		case 0x4e:  return (sh3op)&MOVLL0;
+		case 0x5e:  return (sh3op)&MOVLL0;
+		case 0x6e:  return (sh3op)&MOVLL0;
+		case 0x7e:  return (sh3op)&MOVLL0;
+		case 0x8e:  return (sh3op)&MOVLL0;
+		case 0x9e:  return (sh3op)&MOVLL0;
+		case 0xae:  return (sh3op)&MOVLL0;
+		case 0xbe:  return (sh3op)&MOVLL0;
+		case 0xce:  return (sh3op)&MOVLL0;
+		case 0xde:  return (sh3op)&MOVLL0;
+		case 0xee:  return (sh3op)&MOVLL0;
+		case 0xfe:  return (sh3op)&MOVLL0;
+		// 0xf0
+		case 0x0f:  return (sh3op)&MAC_L;
+		case 0x1f:  return (sh3op)&MAC_L;
+		case 0x2f:  return (sh3op)&MAC_L;
+		case 0x3f:  return (sh3op)&MAC_L;
+		case 0x4f:  return (sh3op)&MAC_L;
+		case 0x5f:  return (sh3op)&MAC_L;
+		case 0x6f:  return (sh3op)&MAC_L;
+		case 0x7f:  return (sh3op)&MAC_L;
+		case 0x8f:  return (sh3op)&MAC_L;
+		case 0x9f:  return (sh3op)&MAC_L;
+		case 0xaf:  return (sh3op)&MAC_L;
+		case 0xbf:  return (sh3op)&MAC_L;
+		case 0xcf:  return (sh3op)&MAC_L;
+		case 0xdf:  return (sh3op)&MAC_L;
+		case 0xef:  return (sh3op)&MAC_L;
+		case 0xff:  return (sh3op)&MAC_L;
+	}
+	return (sh3op)&op_nul;
+}
+static sh3op sh3_decode_4000(const UINT16 opcode)
+{
+	switch(opcode & 0xff)
+	{
+		// 0x00
+		case 0x00:  return (sh3op)&SHLL;
+		case 0x10:  return (sh3op)&DT;
+		case 0x20:  return (sh3op)&SHAL;
+		case 0x30:  return (sh3op)&NOP;
+		case 0x40:  return (sh3op)&SHLL;
+		case 0x50:  return (sh3op)&DT;
+		case 0x60:  return (sh3op)&SHAL;
+		case 0x70:  return (sh3op)&NOP;
+		case 0x80:  return (sh3op)&SHLL;
+		case 0x90:  return (sh3op)&DT;
+		case 0xa0:  return (sh3op)&SHAL;
+		case 0xb0:  return (sh3op)&NOP;
+		case 0xc0:  return (sh3op)&SHLL;
+		case 0xd0:  return (sh3op)&DT;
+		case 0xe0:  return (sh3op)&SHAL;
+		case 0xf0:  return (sh3op)&NOP;
+		// 0x10
+		case 0x01:  return (sh3op)&SHLR;
+		case 0x11:  return (sh3op)&CMPPZ;
+		case 0x21:  return (sh3op)&SHAR;
+		case 0x31:  return (sh3op)&NOP;
+		case 0x41:  return (sh3op)&SHLR;
+		case 0x51:  return (sh3op)&CMPPZ;
+		case 0x61:  return (sh3op)&SHAR;
+		case 0x71:  return (sh3op)&NOP;
+		case 0x81:  return (sh3op)&SHLR;
+		case 0x91:  return (sh3op)&CMPPZ;
+		case 0xa1:  return (sh3op)&SHAR;
+		case 0xb1:  return (sh3op)&NOP;
+		case 0xc1:  return (sh3op)&SHLR;
+		case 0xd1:  return (sh3op)&CMPPZ;
+		case 0xe1:  return (sh3op)&SHAR;
+		case 0xf1:  return (sh3op)&NOP;
+		// 0x20
+		case 0x02:  return (sh3op)&STSMMACH;
+		case 0x12:  return (sh3op)&STSMMACL;
+		case 0x22:  return (sh3op)&STSMPR;
+		case 0x32:  return (sh3op)&STCMSGR;
+		case 0x42:  return (sh3op)&NOP;
+		case 0x52:  return (sh3op)&STSMFPUL;
+		case 0x62:  return (sh3op)&STSMFPSCR;
+		case 0x72:  return (sh3op)&NOP;
+		case 0x82:  return (sh3op)&NOP;
+		case 0x92:  return (sh3op)&NOP;
+		case 0xa2:  return (sh3op)&NOP;
+		case 0xb2:  return (sh3op)&NOP;
+		case 0xc2:  return (sh3op)&NOP;
+		case 0xd2:  return (sh3op)&NOP;
+		case 0xe2:  return (sh3op)&NOP;
+		case 0xf2:  return (sh3op)&STCMDBR;
+		// 0x30
+		case 0x03:  return (sh3op)&STCMSR;
+		case 0x13:  return (sh3op)&STCMGBR;
+		case 0x23:  return (sh3op)&STCMVBR;
+		case 0x33:  return (sh3op)&STCMSSR;
+		case 0x43:  return (sh3op)&STCMSPC;
+		case 0x53:  return (sh3op)&NOP;
+		case 0x63:  return (sh3op)&NOP;
+		case 0x73:  return (sh3op)&NOP;
+		case 0x83:  return (sh3op)&STCMRBANK;
+		case 0x93:  return (sh3op)&STCMRBANK;
+		case 0xa3:  return (sh3op)&STCMRBANK;
+		case 0xb3:  return (sh3op)&STCMRBANK;
+		case 0xc3:  return (sh3op)&STCMRBANK;
+		case 0xd3:  return (sh3op)&STCMRBANK;
+		case 0xe3:  return (sh3op)&STCMRBANK;
+		case 0xf3:  return (sh3op)&STCMRBANK;
+		// 0x40
+		case 0x04:  return (sh3op)&ROTL;
+		case 0x14:  return (sh3op)&NOP;
+		case 0x24:  return (sh3op)&ROTCL;
+		case 0x34:  return (sh3op)&NOP;
+		case 0x44:  return (sh3op)&ROTL;
+		case 0x54:  return (sh3op)&NOP;
+		case 0x64:  return (sh3op)&ROTCL;
+		case 0x74:  return (sh3op)&NOP;
+		case 0x84:  return (sh3op)&ROTL;
+		case 0x94:  return (sh3op)&NOP;
+		case 0xa4:  return (sh3op)&ROTCL;
+		case 0xb4:  return (sh3op)&NOP;
+		case 0xc4:  return (sh3op)&ROTL;
+		case 0xd4:  return (sh3op)&NOP;
+		case 0xe4:  return (sh3op)&ROTCL;
+		case 0xf4:  return (sh3op)&NOP;
+		// 0x50
+		case 0x05:  return (sh3op)&ROTR;
+		case 0x15:  return (sh3op)&CMPPL;
+		case 0x25:  return (sh3op)&ROTCR;
+		case 0x35:  return (sh3op)&NOP;
+		case 0x45:  return (sh3op)&ROTR;
+		case 0x55:  return (sh3op)&CMPPL;
+		case 0x65:  return (sh3op)&ROTCR;
+		case 0x75:  return (sh3op)&NOP;
+		case 0x85:  return (sh3op)&ROTR;
+		case 0x95:  return (sh3op)&CMPPL;
+		case 0xa5:  return (sh3op)&ROTCR;
+		case 0xb5:  return (sh3op)&NOP;
+		case 0xc5:  return (sh3op)&ROTR;
+		case 0xd5:  return (sh3op)&CMPPL;
+		case 0xe5:  return (sh3op)&ROTCR;
+		case 0xf5:  return (sh3op)&NOP;
+		// 0x60
+		case 0x06:  return (sh3op)&LDSMMACH;
+		case 0x16:  return (sh3op)&LDSMMACL;
+		case 0x26:  return (sh3op)&LDSMPR;
+		case 0x36:  return (sh3op)&NOP;
+		case 0x46:  return (sh3op)&NOP;
+		case 0x56:  return (sh3op)&LDSMFPUL;
+		case 0x66:  return (sh3op)&LDSMFPSCR;
+		case 0x76:  return (sh3op)&NOP;
+		case 0x86:  return (sh3op)&NOP;
+		case 0x96:  return (sh3op)&NOP;
+		case 0xa6:  return (sh3op)&NOP;
+		case 0xb6:  return (sh3op)&NOP;
+		case 0xc6:  return (sh3op)&NOP;
+		case 0xd6:  return (sh3op)&NOP;
+		case 0xe6:  return (sh3op)&NOP;
+		case 0xf6:  return (sh3op)&LDCMDBR;
+		// 0x70
+		case 0x07:  return (sh3op)&LDCMSR;
+		case 0x17:  return (sh3op)&LDCMGBR;
+		case 0x27:  return (sh3op)&LDCMVBR;
+		case 0x37:  return (sh3op)&LDCMSSR;
+		case 0x47:  return (sh3op)&LDCMSPC;
+		case 0x57:  return (sh3op)&NOP;
+		case 0x67:  return (sh3op)&NOP;
+		case 0x77:  return (sh3op)&NOP;
+		case 0x87:  return (sh3op)&LDCMRBANK;
+		case 0x97:  return (sh3op)&LDCMRBANK;
+		case 0xa7:  return (sh3op)&LDCMRBANK;
+		case 0xb7:  return (sh3op)&LDCMRBANK;
+		case 0xc7:  return (sh3op)&LDCMRBANK;
+		case 0xd7:  return (sh3op)&LDCMRBANK;
+		case 0xe7:  return (sh3op)&LDCMRBANK;
+		case 0xf7:  return (sh3op)&LDCMRBANK;
+		// 0x80
+		case 0x08:  return (sh3op)&SHLL2;
+		case 0x18:  return (sh3op)&SHLL8;
+		case 0x28:  return (sh3op)&SHLL16;
+		case 0x38:  return (sh3op)&NOP;
+		case 0x48:  return (sh3op)&SHLL2;
+		case 0x58:  return (sh3op)&SHLL8;
+		case 0x68:  return (sh3op)&SHLL16;
+		case 0x78:  return (sh3op)&NOP;
+		case 0x88:  return (sh3op)&SHLL2;
+		case 0x98:  return (sh3op)&SHLL8;
+		case 0xa8:  return (sh3op)&SHLL16;
+		case 0xb8:  return (sh3op)&NOP;
+		case 0xc8:  return (sh3op)&SHLL2;
+		case 0xd8:  return (sh3op)&SHLL8;
+		case 0xe8:  return (sh3op)&SHLL16;
+		case 0xf8:  return (sh3op)&NOP;
+		// 0x90
+		case 0x09:  return (sh3op)&SHLR2;
+		case 0x19:  return (sh3op)&SHLR8;
+		case 0x29:  return (sh3op)&SHLR16;
+		case 0x39:  return (sh3op)&NOP;
+		case 0x49:  return (sh3op)&SHLR2;
+		case 0x59:  return (sh3op)&SHLR8;
+		case 0x69:  return (sh3op)&SHLR16;
+		case 0x79:  return (sh3op)&NOP;
+		case 0x89:  return (sh3op)&SHLR2;
+		case 0x99:  return (sh3op)&SHLR8;
+		case 0xa9:  return (sh3op)&SHLR16;
+		case 0xb9:  return (sh3op)&NOP;
+		case 0xc9:  return (sh3op)&SHLR2;
+		case 0xd9:  return (sh3op)&SHLR8;
+		case 0xe9:  return (sh3op)&SHLR16;
+		case 0xf9:  return (sh3op)&NOP;
+		// 0xa0
+		case 0x0a:  return (sh3op)&LDSMACH;
+		case 0x1a:  return (sh3op)&LDSMACL;
+		case 0x2a:  return (sh3op)&LDSPR;
+		case 0x3a:  return (sh3op)&NOP;
+		case 0x4a:  return (sh3op)&NOP;
+		case 0x5a:  return (sh3op)&LDSFPUL;
+		case 0x6a:  return (sh3op)&LDSFPSCR;
+		case 0x7a:  return (sh3op)&NOP;
+		case 0x8a:  return (sh3op)&NOP;
+		case 0x9a:  return (sh3op)&NOP;
+		case 0xaa:  return (sh3op)&NOP;
+		case 0xba:  return (sh3op)&NOP;
+		case 0xca:  return (sh3op)&NOP;
+		case 0xda:  return (sh3op)&NOP;
+		case 0xea:  return (sh3op)&NOP;
+		case 0xfa:  return (sh3op)&LDCDBR;
+		// 0xb0
+		case 0x0b:  return (sh3op)&JSR;
+		case 0x1b:  return (sh3op)&TAS;
+		case 0x2b:  return (sh3op)&JMP;
+		case 0x3b:  return (sh3op)&NOP;
+		case 0x4b:  return (sh3op)&JSR;
+		case 0x5b:  return (sh3op)&TAS;
+		case 0x6b:  return (sh3op)&JMP;
+		case 0x7b:  return (sh3op)&NOP;
+		case 0x8b:  return (sh3op)&JSR;
+		case 0x9b:  return (sh3op)&TAS;
+		case 0xab:  return (sh3op)&JMP;
+		case 0xbb:  return (sh3op)&NOP;
+		case 0xcb:  return (sh3op)&JSR;
+		case 0xdb:  return (sh3op)&TAS;
+		case 0xeb:  return (sh3op)&JMP;
+		case 0xfb:  return (sh3op)&NOP;
+		// 0xc0
+		case 0x0c:  return (sh3op)&SHAD;
+		case 0x1c:  return (sh3op)&SHAD;
+		case 0x2c:  return (sh3op)&SHAD;
+		case 0x3c:  return (sh3op)&SHAD;
+		case 0x4c:  return (sh3op)&SHAD;
+		case 0x5c:  return (sh3op)&SHAD;
+		case 0x6c:  return (sh3op)&SHAD;
+		case 0x7c:  return (sh3op)&SHAD;
+		case 0x8c:  return (sh3op)&SHAD;
+		case 0x9c:  return (sh3op)&SHAD;
+		case 0xac:  return (sh3op)&SHAD;
+		case 0xbc:  return (sh3op)&SHAD;
+		case 0xcc:  return (sh3op)&SHAD;
+		case 0xdc:  return (sh3op)&SHAD;
+		case 0xec:  return (sh3op)&SHAD;
+		case 0xfc:  return (sh3op)&SHAD;
+		// 0xd0
+		case 0x0d:  return (sh3op)&SHLD;
+		case 0x1d:  return (sh3op)&SHLD;
+		case 0x2d:  return (sh3op)&SHLD;
+		case 0x3d:  return (sh3op)&SHLD;
+		case 0x4d:  return (sh3op)&SHLD;
+		case 0x5d:  return (sh3op)&SHLD;
+		case 0x6d:  return (sh3op)&SHLD;
+		case 0x7d:  return (sh3op)&SHLD;
+		case 0x8d:  return (sh3op)&SHLD;
+		case 0x9d:  return (sh3op)&SHLD;
+		case 0xad:  return (sh3op)&SHLD;
+		case 0xbd:  return (sh3op)&SHLD;
+		case 0xcd:  return (sh3op)&SHLD;
+		case 0xdd:  return (sh3op)&SHLD;
+		case 0xed:  return (sh3op)&SHLD;
+		case 0xfd:  return (sh3op)&SHLD;
+		// 0xe0
+		case 0x0e:  return (sh3op)&LDCSR;
+		case 0x1e:  return (sh3op)&LDCGBR;
+		case 0x2e:  return (sh3op)&LDCVBR;
+		case 0x3e:  return (sh3op)&LDCSSR;
+		case 0x4e:  return (sh3op)&LDCSPC;
+		case 0x5e:  return (sh3op)&NOP;
+		case 0x6e:  return (sh3op)&NOP;
+		case 0x7e:  return (sh3op)&NOP;
+		case 0x8e:  return (sh3op)&LDCRBANK;
+		case 0x9e:  return (sh3op)&LDCRBANK;
+		case 0xae:  return (sh3op)&LDCRBANK;
+		case 0xbe:  return (sh3op)&LDCRBANK;
+		case 0xce:  return (sh3op)&LDCRBANK;
+		case 0xde:  return (sh3op)&LDCRBANK;
+		case 0xee:  return (sh3op)&LDCRBANK;
+		case 0xfe:  return (sh3op)&LDCRBANK;
+		// 0xf0
+		case 0x0f:  return (sh3op)&MAC_W;
+		case 0x1f:  return (sh3op)&MAC_W;
+		case 0x2f:  return (sh3op)&MAC_W;
+		case 0x3f:  return (sh3op)&MAC_W;
+		case 0x4f:  return (sh3op)&MAC_W;
+		case 0x5f:  return (sh3op)&MAC_W;
+		case 0x6f:  return (sh3op)&MAC_W;
+		case 0x7f:  return (sh3op)&MAC_W;
+		case 0x8f:  return (sh3op)&MAC_W;
+		case 0x9f:  return (sh3op)&MAC_W;
+		case 0xaf:  return (sh3op)&MAC_W;
+		case 0xbf:  return (sh3op)&MAC_W;
+		case 0xcf:  return (sh3op)&MAC_W;
+		case 0xdf:  return (sh3op)&MAC_W;
+		case 0xef:  return (sh3op)&MAC_W;
+		case 0xff:  return (sh3op)&MAC_W;
+	}
+	return (sh3op)&op_nul;
+}
+static sh3op sh3_decode(const UINT16 opcode)
+{
+	switch(opcode & 0xf000)
+	{
+		case 0x0000:
+			return sh3_decode_0000(opcode);
+
+		case 0x1000:
+			return (sh3op)&MOVLS4;
+
+		case 0x2000:
+			switch(opcode & 0x0f)
+			{
+				case 0x00:  return (sh3op)&MOVBS;
+				case 0x01:  return (sh3op)&MOVWS;
+				case 0x02:  return (sh3op)&MOVLS;
+				case 0x03:  return (sh3op)&NOP;
+				case 0x04:  return (sh3op)&MOVBM;
+				case 0x05:  return (sh3op)&MOVWM;
+				case 0x06:  return (sh3op)&MOVLM;
+				case 0x07:  return (sh3op)&DIV0S;
+				case 0x08:  return (sh3op)&TST;
+				case 0x09:  return (sh3op)&AND;
+				case 0x0a:  return (sh3op)&XOR;
+				case 0x0b:  return (sh3op)&OR;
+				case 0x0c:  return (sh3op)&CMPSTR;
+				case 0x0d:  return (sh3op)&XTRCT;
+				case 0x0e:  return (sh3op)&MULU;
+				case 0x0f:  return (sh3op)&MULS;
+			}
+			break;
+
+		case 0x3000:
+			switch(opcode & 0x0f)
+			{
+				case 0x00:  return (sh3op)&CMPEQ;
+				case 0x01:  return (sh3op)&NOP;
+				case 0x02:  return (sh3op)&CMPHS;
+				case 0x03:  return (sh3op)&CMPGE;
+				case 0x04:  return (sh3op)&DIV1;
+				case 0x05:  return (sh3op)&DMULU;
+				case 0x06:  return (sh3op)&CMPHI;
+				case 0x07:  return (sh3op)&CMPGT;
+				case 0x08:  return (sh3op)&SUB;
+				case 0x09:  return (sh3op)&NOP;
+				case 0x0a:  return (sh3op)&SUBC;
+				case 0x0b:  return (sh3op)&SUBV;
+				case 0x0c:  return (sh3op)&ADD;
+				case 0x0d:  return (sh3op)&DMULS;
+				case 0x0e:  return (sh3op)&ADDC;
+				case 0x0f:  return (sh3op)&ADDV;
+			}
+			break;
+
+		case 0x4000:
+			return sh3_decode_4000(opcode);
+
+		case 0x5000:
+			return (sh3op)&MOVLL4;
+
+		case 0x6000:
+			switch(opcode & 0x0f)
+			{
+				case 0x00:  return (sh3op)&MOVBL;
+				case 0x01:  return (sh3op)&MOVWL;
+				case 0x02:  return (sh3op)&MOVLL;
+				case 0x03:  return (sh3op)&MOV;
+				case 0x04:  return (sh3op)&MOVBP;
+				case 0x05:  return (sh3op)&MOVWP;
+				case 0x06:  return (sh3op)&MOVLP;
+				case 0x07:  return (sh3op)&NOT;
+				case 0x08:  return (sh3op)&SWAPB;
+				case 0x09:  return (sh3op)&SWAPW;
+				case 0x0a:  return (sh3op)&NEGC;
+				case 0x0b:  return (sh3op)&NEG;
+				case 0x0c:  return (sh3op)&EXTUB;
+				case 0x0d:  return (sh3op)&EXTUW;
+				case 0x0e:  return (sh3op)&EXTSB;
+				case 0x0f:  return (sh3op)&EXTSW;
+			}
+			break;
+
+		case 0x7000:
+			return (sh3op)&ADDI;
+
+		case 0x8000:
+			switch((opcode >> 8) & 0x0f)
+			{
+				case 0x00:  return (sh3op)&MOVBS4;
+				case 0x01:  return (sh3op)&MOVWS4;
+				case 0x02:  return (sh3op)&NOP;
+				case 0x03:  return (sh3op)&NOP;
+				case 0x04:  return (sh3op)&MOVBL4;
+				case 0x05:  return (sh3op)&MOVWL4;
+				case 0x06:  return (sh3op)&NOP;
+				case 0x07:  return (sh3op)&NOP;
+				case 0x08:  return (sh3op)&CMPIM;
+				case 0x09:  return (sh3op)&BT;
+				case 0x0a:  return (sh3op)&NOP;
+				case 0x0b:  return (sh3op)&BF;
+				case 0x0c:  return (sh3op)&NOP;
+				case 0x0d:  return (sh3op)&BTS;
+				case 0x0e:  return (sh3op)&NOP;
+				case 0x0f:  return (sh3op)&BFS;
+			}
+			break;
+
+		case 0x9000:
+			return (sh3op)&MOVWI;
+
+		case 0xa000:
+			return (sh3op)&BRA;
+
+		case 0xb000:
+			return (sh3op)&BSR;
+
+		case 0xc000:
+			switch((opcode >> 8) & 0x0f)
+			{
+				case 0x00:  return (sh3op)&MOVBSG;
+				case 0x01:  return (sh3op)&MOVWSG;
+				case 0x02:  return (sh3op)&MOVLSG;
+				case 0x03:  return (sh3op)&TRAPA;
+				case 0x04:  return (sh3op)&MOVBLG;
+				case 0x05:  return (sh3op)&MOVWLG;
+				case 0x06:  return (sh3op)&MOVLLG;
+				case 0x07:  return (sh3op)&MOVA;
+				case 0x08:  return (sh3op)&TSTI;
+				case 0x09:  return (sh3op)&ANDI;
+				case 0x0a:  return (sh3op)&XORI;
+				case 0x0b:  return (sh3op)&ORI;
+				case 0x0c:  return (sh3op)&TSTM;
+				case 0x0d:  return (sh3op)&ANDM;
+				case 0x0e:  return (sh3op)&XORM;
+				case 0x0f:  return (sh3op)&ORM;
+			}
+			break;
+
+		case 0xd000:
+			return (sh3op)&MOVLI;
+
+		case 0xe000:
+			return (sh3op)&MOVI;
+
+		case 0xf000:
+			switch(opcode & 0x0f)
+			{
+				case 0x00:  return (sh3op)&FADD;
+				case 0x01:  return (sh3op)&FSUB;
+				case 0x02:  return (sh3op)&FMUL;
+				case 0x03:  return (sh3op)&FDIV;
+				case 0x04:  return (sh3op)&FCMP_EQ;
+				case 0x05:  return (sh3op)&FCMP_GT;
+				case 0x06:  return (sh3op)&FMOVS0FR;
+				case 0x07:  return (sh3op)&FMOVFRS0;
+				case 0x08:  return (sh3op)&FMOVMRFR;
+				case 0x09:  return (sh3op)&FMOVMRIFR;
+				case 0x0a:  return (sh3op)&FMOVFRMR;
+				case 0x0b:  return (sh3op)&FMOVFRMDR;
+				case 0x0c:  return (sh3op)&FMOVFR;
+				case 0x0d:  return (sh3op)&op1111_0x13;
+				case 0x0e:  return (sh3op)&FMAC;
+				case 0x0f:  return (sh3op)&dbreak;
+			}
+			break;
+	}
+	return (sh3op)&op_nul;
+}
+
+static sh3op sh3_optable[0x10000];
+static int sh3_optable_built = 0;
+static void sh3_build_optable(void)
+{
+	for (UINT32 i = 0; i < 0x10000; i++) sh3_optable[i] = sh3_decode((UINT16)i);
+	sh3_optable_built = 1;
+}

@@ -4621,6 +4621,16 @@ static inline void execute_one(const UINT16 opcode)
 	}
 }
 
+// Tier 1 Phase 1a: optional function-pointer dispatch table (generated from execute_one above).
+// -DSH3_OPTABLE swaps the per-instruction two-level switch for one indirect call. Default off =
+// baseline interpreter, byte-identical. EXEC_ONE() is the single dispatch point used by the run loop.
+#ifdef SH3_OPTABLE
+#include "sh4_optable.inc"
+#define EXEC_ONE(op) (sh3_optable[op](op))
+#else
+#define EXEC_ONE(op) execute_one(op)
+#endif
+
 	static inline void sh4_check_pending_irq(/*const char *message*/) // look for highest priority active exception and handle it
 	{
 		int a,irq,z;
@@ -4666,7 +4676,7 @@ static int Sh3Run_timerhack(int cycles)
 			m_delay = 0;
 			m_ppc = m_pc;
 
-			execute_one(opcode);
+			EXEC_ONE(opcode);
 		}
 		else
 		{
@@ -4675,7 +4685,7 @@ static int Sh3Run_timerhack(int cycles)
 			m_pc += 2;
 			m_ppc = m_pc;
 
-			execute_one(opcode);
+			EXEC_ONE(opcode);
 		}
 		if (m_test_irq && !m_delay)
 		{
@@ -4716,7 +4726,7 @@ static int Sh3Run_normal(int cycles)
 			m_delay = 0;
 			m_ppc = m_pc;
 
-			execute_one(opcode);
+			EXEC_ONE(opcode);
 		}
 		else
 		{
@@ -4725,7 +4735,7 @@ static int Sh3Run_normal(int cycles)
 			m_pc += 2;
 			m_ppc = m_pc;
 
-			execute_one(opcode);
+			EXEC_ONE(opcode);
 		}
 		if (m_test_irq && !m_delay)
 		{
@@ -4745,6 +4755,9 @@ static int Sh3Run_normal(int cycles)
 
 int Sh3Run(int cycles)
 {
+#ifdef SH3_OPTABLE
+	if (!sh3_optable_built) sh3_build_optable();
+#endif
 	return (timer_granularity == 0) ? Sh3Run_normal(cycles) : Sh3Run_timerhack(cycles);
 }
 

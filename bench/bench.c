@@ -406,6 +406,7 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
  * priority (0/1/16) or sleep-vs-spin (measured: ~20-60 loop iters in 49 s every way), so it
  * caught only 8 samples. The decrementer-driven alarm never touches the thread scheduler. */
 static int profile_on;
+static int pace_on;   /* config pace=1: sleep out each frame to 60fps so CV1KUTIL shows true core idle */
 #ifdef __WIIU__
 #define PROF_SLOTS 65536
 static uint32_t prof_pc[PROF_SLOTS], prof_count[PROF_SLOTS];
@@ -677,6 +678,8 @@ static void run_set(const char *set)
     }
 
     retro_get_system_av_info(&av);
+    /* realtime frame budget (us) for pace mode: how long a frame "should" take at the game's fps */
+    uint64_t frame_target_us = (av.timing.fps > 1.0) ? (uint64_t)(1000000.0 / av.timing.fps + 0.5) : 16667;
     if (dump_audio) {
         snprintf(path, sizeof(path), "%s/%s.audio.raw", bench_dir, set);
         audio_file = fopen(path, "wb");
@@ -690,6 +693,13 @@ static void run_set(const char *set)
         t_run += d;
         if (d > worst)
             worst = d;
+#ifdef __WIIU__
+        /* pace mode: after timing the (flat-out) frame, sleep out the rest of the realtime budget so
+         * the core actually idles when the game is faster than 60fps - that idle is what CV1KUTIL reads.
+         * d (the measured frame time) is untouched, so speed_pct/cpu_ms stay flat-out. */
+        if (pace_on && d < frame_target_us)
+            OSSleepTicks(OSMicrosecondsToTicks(frame_target_us - d));
+#endif
         /* steady state: skip the boot/load frames */
         if (profile_on && frame_no == total_frames / 4)
             prof_start();
@@ -741,6 +751,16 @@ static void run_set(const char *set)
         if (load_errors)
             snprintf(line + strlen(line), sizeof(line) - strlen(line), " load_errors=%d first_error=%s", load_errors,
                      first_load_error);
+#ifdef CV1K_PROF
+        {
+            /* single main-core utilization needed to hold the game's fps: steady frame time / budget.
+             * >100 = the emulation needs more than one core's worth (drops frames). pace mode's
+             * CV1KUTIL core1 is the capped, directly-measured counterpart (100 when this is >=100). */
+            double budget = 1000.0 / fps;
+            blog("CV1KNEED %s core1_need_pct=%.0f steady_ms=%.2f budget_ms=%.2f paced=%d (>100 = over one core)",
+                 set, budget > 0 ? steady_ms / budget * 100.0 : 0.0, steady_ms, budget, pace_on);
+        }
+#endif
     }
     /* log the result before unloading, so a crash in the driver's exit code still leaves it */
     blog("%s", line);
@@ -817,6 +837,8 @@ static void read_config(void)
             dump_audio = atoi(eq);
         else if (!strcmp(buf, "profile"))
             profile_on = atoi(eq);
+        else if (!strcmp(buf, "pace"))
+            pace_on = atoi(eq);
         else if (!strcmp(buf, "only"))
             snprintf(only_set, sizeof(only_set), "%s", eq);
     }

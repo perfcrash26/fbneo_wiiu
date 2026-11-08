@@ -235,6 +235,10 @@ void Sh3SetTimerGranularity(INT32 timergransh)
 
 //-- timer jibbajabba --------------------+1
 // simple timer system -dink 2019, v2 (2022-upgreydde ver.)
+// Tier 1.5 (config "timerfast", default on): when a TMU channel is not running, run_prescale's
+// per-instruction subtraction loop has no side effects, so it collapses to one modulo - bit-exact,
+// removes the ~10% PROFPC hotspot when timers idle. timerfast=0 restores the exact original loop.
+extern "C" int g_sh3_timerfast = 1;
 struct sh4_dtimer
 {
 	INT32 running;
@@ -284,6 +288,13 @@ struct sh4_dtimer
 
 	void run_prescale(INT32 cyc) {
 		prescale_counter += cyc * m_ratio;
+		if (g_sh3_timerfast && !running) {
+			// not running: the loop body below is a no-op except the subtraction, so this is
+			// exactly what it would compute, without spinning (PROFPC: ~10% of mushisam here).
+			if (prescale_counter >= timer_prescaler)
+				prescale_counter %= timer_prescaler;
+			return;
+		}
 		while (prescale_counter >= timer_prescaler) {
 			prescale_counter -= timer_prescaler;
 

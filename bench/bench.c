@@ -411,6 +411,7 @@ extern int g_sh3_optable;   /* core (sh4.cpp): SH-3 dispatch optable, default on
 extern int g_sh3_ophist;    /* core: guest opcode-execution histogram on/off (config ophist=1) */
 extern void Sh3OphistReset(void);
 extern unsigned long long Sh3OphistTop(unsigned int *ptrs, unsigned int *counts, int maxn);
+extern int g_sh3_timerfast;  /* core: TMU !running prescale shortcut, default on; config timerfast=0 to A/B */
 #ifdef __WIIU__
 #define PROF_SLOTS 65536
 static uint32_t prof_pc[PROF_SLOTS], prof_count[PROF_SLOTS];
@@ -856,6 +857,8 @@ static void read_config(void)
             g_sh3_optable = atoi(eq);
         else if (!strcmp(buf, "ophist"))
             g_sh3_ophist = atoi(eq);
+        else if (!strcmp(buf, "timerfast"))
+            g_sh3_timerfast = atoi(eq);
         else if (!strcmp(buf, "only"))
             snprintf(only_set, sizeof(only_set), "%s", eq);
     }

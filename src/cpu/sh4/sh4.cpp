@@ -4621,15 +4621,13 @@ static inline void execute_one(const UINT16 opcode)
 	}
 }
 
-// Tier 1 Phase 1a: optional function-pointer dispatch table (generated from execute_one above).
-// -DSH3_OPTABLE swaps the per-instruction two-level switch for one indirect call. Default off =
-// baseline interpreter, byte-identical. EXEC_ONE() is the single dispatch point used by the run loop.
-#ifdef SH3_OPTABLE
+// Tier 1: SH-3 dispatch function-pointer table (generated from execute_one above), always compiled.
+// g_sh3_optable (config option "optable", DEFAULT ON) picks the flat table (one indirect call) over
+// the original two-level switch at runtime; the frontend can set it to 0 to fall back to the exact
+// baseline interpreter. The toggle is a single perfectly-predicted branch per instruction (~free).
 #include "sh4_optable.inc"
-#define EXEC_ONE(op) (sh3_optable[op](op))
-#else
-#define EXEC_ONE(op) execute_one(op)
-#endif
+extern "C" int g_sh3_optable = 1;
+#define EXEC_ONE(op) do { if (g_sh3_optable) sh3_optable[op](op); else execute_one(op); } while (0)
 
 	static inline void sh4_check_pending_irq(/*const char *message*/) // look for highest priority active exception and handle it
 	{
@@ -4755,9 +4753,7 @@ static int Sh3Run_normal(int cycles)
 
 int Sh3Run(int cycles)
 {
-#ifdef SH3_OPTABLE
 	if (!sh3_optable_built) sh3_build_optable();
-#endif
 	return (timer_granularity == 0) ? Sh3Run_normal(cycles) : Sh3Run_timerhack(cycles);
 }
 

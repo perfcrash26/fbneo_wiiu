@@ -407,6 +407,7 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
  * caught only 8 samples. The decrementer-driven alarm never touches the thread scheduler. */
 static int profile_on;
 static int pace_on;   /* config pace=1: sleep out each frame to 60fps so CV1KUTIL shows true core idle */
+extern int g_sh3_optable;   /* core (sh4.cpp): SH-3 dispatch optable, default on; config optable=0 to A/B */
 #ifdef __WIIU__
 #define PROF_SLOTS 65536
 static uint32_t prof_pc[PROF_SLOTS], prof_count[PROF_SLOTS];
@@ -839,6 +840,8 @@ static void read_config(void)
             profile_on = atoi(eq);
         else if (!strcmp(buf, "pace"))
             pace_on = atoi(eq);
+        else if (!strcmp(buf, "optable"))
+            g_sh3_optable = atoi(eq);
         else if (!strcmp(buf, "only"))
             snprintf(only_set, sizeof(only_set), "%s", eq);
     }
@@ -881,8 +884,8 @@ int main(int argc, char **argv)
     snprintf(path, sizeof(path), "%s/prof", bench_dir);
     if (profile_on)
         mkdir(path, 0777);
-    blog("fbneo_bench start: frames=%d profile=%d roms=%s system=%s mem_used_kb=%u", total_frames, profile_on, roms_dir, sys_dir,
-         used_kb());
+    blog("fbneo_bench start: frames=%d profile=%d pace=%d optable=%d roms=%s system=%s mem_used_kb=%u", total_frames,
+         profile_on, pace_on, g_sh3_optable, roms_dir, sys_dir, used_kb());
 
     snprintf(path, sizeof(path), "%s/list.txt", bench_dir);
     f = fopen(path, "r");

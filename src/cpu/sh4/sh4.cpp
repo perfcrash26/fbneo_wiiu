@@ -4627,7 +4627,41 @@ static inline void execute_one(const UINT16 opcode)
 // baseline interpreter. The toggle is a single perfectly-predicted branch per instruction (~free).
 #include "sh4_optable.inc"
 extern "C" int g_sh3_optable = 1;
-#define EXEC_ONE(op) do { if (g_sh3_optable) sh3_optable[op](op); else execute_one(op); } while (0)
+
+// Guest execution histogram (config option "ophist", default off): counts executions per opcode,
+// aggregated by handler at dump. Counts are GUEST-deterministic, so a hotspot found in Cemu is the
+// same on hardware - the right "what to optimize / JIT next" signal. One predicted-not-taken branch
+// per instruction when off.
+extern "C" int g_sh3_ophist = 0;
+static UINT32 sh3_op_hist[0x10000];
+extern "C" void Sh3OphistReset(void) { memset(sh3_op_hist, 0, sizeof(sh3_op_hist)); }
+// Aggregate by handler pointer and fill the top maxn (count desc). Returns total executions.
+// ptrs[] get the (relocated) handler addresses - symbolize offline to names.
+extern "C" unsigned long long Sh3OphistTop(unsigned int *ptrs, unsigned int *counts, int maxn)
+{
+	static unsigned int hp[1024]; static unsigned long long hc[1024]; int nh = 0;
+	unsigned long long total = 0;
+	for (int op = 0; op < 0x10000; op++) {
+		UINT32 c = sh3_op_hist[op];
+		if (!c) continue;
+		total += c;
+		unsigned int p = (unsigned int)(uintptr_t)sh3_optable[op];
+		int j = 0;
+		for (; j < nh; j++) if (hp[j] == p) break;
+		if (j == nh) { if (nh >= 1024) continue; hp[nh] = p; hc[nh] = 0; nh++; }
+		hc[j] += c;
+	}
+	for (int k = 0; k < maxn; k++) {
+		int best = -1; unsigned long long bc = 0;
+		for (int j = 0; j < nh; j++) if (hc[j] > bc) { bc = hc[j]; best = j; }
+		ptrs[k] = (best < 0) ? 0 : hp[best];
+		counts[k] = (best < 0) ? 0 : (unsigned int)(hc[best] > 0xffffffffULL ? 0xffffffffU : hc[best]);
+		if (best >= 0) hc[best] = 0;
+	}
+	return total;
+}
+
+#define EXEC_ONE(op) do { if (g_sh3_ophist) sh3_op_hist[op]++; if (g_sh3_optable) sh3_optable[op](op); else execute_one(op); } while (0)
 
 	static inline void sh4_check_pending_irq(/*const char *message*/) // look for highest priority active exception and handle it
 	{

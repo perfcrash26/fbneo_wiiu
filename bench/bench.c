@@ -408,6 +408,9 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
 static int profile_on;
 static int pace_on;   /* config pace=1: sleep out each frame to 60fps so CV1KUTIL shows true core idle */
 extern int g_sh3_optable;   /* core (sh4.cpp): SH-3 dispatch optable, default on; config optable=0 to A/B */
+extern int g_sh3_ophist;    /* core: guest opcode-execution histogram on/off (config ophist=1) */
+extern void Sh3OphistReset(void);
+extern unsigned long long Sh3OphistTop(unsigned int *ptrs, unsigned int *counts, int maxn);
 #ifdef __WIIU__
 #define PROF_SLOTS 65536
 static uint32_t prof_pc[PROF_SLOTS], prof_count[PROF_SLOTS];
@@ -489,6 +492,7 @@ static void cv1k_prof_start(void)
 {
     g_cv1k_prof_cpu = g_cv1k_prof_ymz = g_cv1k_prof_draw = g_cv1k_prof_blitwait = g_cv1k_prof_total = 0;
     g_cv1k_prof_frames = 0;
+    if (g_sh3_ophist) Sh3OphistReset();
     /* spinners are created once and left running for the whole process (priority 31 costs nothing);
      * no stop/join, which hung on a console in nulldc. Each window reads an idle delta. */
     if (!cvp_started) {
@@ -531,6 +535,14 @@ static void cv1k_prof_report(const char *set)
          set, 100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id0) / spanus,
          100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id1) / spanus,
          100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id2) / spanus);
+    if (g_sh3_ophist) {
+        /* top handlers by guest execution count over the window; ptr symbolizes offline to a name */
+        unsigned int ptrs[24], cnt[24];
+        unsigned long long tot_ops = Sh3OphistTop(ptrs, cnt, 24);
+        blog("OPHIST %s total_ops=%llu (handler ptr count pct, symbolize ptr offline)", set, (unsigned long long)tot_ops);
+        for (int k = 0; k < 24 && cnt[k]; k++)
+            blog("OPHIST %s %02d %08x %u %.1f", set, k, ptrs[k], cnt[k], tot_ops ? 100.0 * cnt[k] / tot_ops : 0.0);
+    }
 }
 #endif /* CV1K_PROF */
 
@@ -842,6 +854,8 @@ static void read_config(void)
             pace_on = atoi(eq);
         else if (!strcmp(buf, "optable"))
             g_sh3_optable = atoi(eq);
+        else if (!strcmp(buf, "ophist"))
+            g_sh3_ophist = atoi(eq);
         else if (!strcmp(buf, "only"))
             snprintf(only_set, sizeof(only_set), "%s", eq);
     }

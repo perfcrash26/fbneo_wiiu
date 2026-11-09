@@ -214,6 +214,24 @@ static void load_config(void)
     mkdirs(g_content);   /* improvement: make sure the content dir exists on first run */
 }
 
+/* Generic: read an integer "key=N" from config.txt, or def if absent. Valid after picker_init.
+ * Lets a host app read its own config keys (e.g. frameskip) without the picker knowing about them. */
+int picker_cfg_int(const char *key, int def)
+{
+    char path[800], line[800];
+    size_t kl = strlen(key);
+    FILE *f;
+    int v = def;
+    config_path(path, sizeof(path));
+    f = fopen(path, "r");
+    if (!f) return def;
+    while (fgets(line, sizeof(line), f))
+        if (!strncmp(line, key, kl) && line[kl] == '=')
+            v = atoi(line + kl + 1);
+    fclose(f);
+    return v;
+}
+
 static int set_cmp(const void *a, const void *b)   /* case-insensitive, over the malloc'd name pointers */
 {
     return strcasecmp(*(const char *const *)a, *(const char *const *)b);

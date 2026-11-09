@@ -64,6 +64,9 @@ static unsigned rotation;		/* libretro SET_ROTATION (90-degree CCW steps) */
 static SDL_AudioDeviceID adev;
 static int want_quit, want_menu;
 
+extern int nFrameskip;   /* FBNeo core: render 1 of every nFrameskip frames (default 1 = every frame) */
+static int g_frameskip;  /* config "frameskip=N": skip N renders between shown frames (0 = off) */
+
 extern const char *fbneo_system(const char *name);	/* C++ shim, fbneo_names.cpp */
 
 /* ---- libretro callbacks ---- */
@@ -195,6 +198,7 @@ static int load_and_play(const char *set)
     retro_get_system_av_info(&av);
     plog("av: %ux%u fps=%.2f rate=%.0f", av.geometry.base_width, av.geometry.base_height,
          av.timing.fps, av.timing.sample_rate);
+    nFrameskip = g_frameskip + 1;   /* set per-game after load; skips the core draw on skipped frames */
 
     SDL_zero(want);
     want.freq = (int)av.timing.sample_rate;
@@ -246,6 +250,11 @@ int main(int argc, char **argv)
 
     rc = picker_init(&cfg);
     if (rc) { plog("picker_init failed (%d): %s", rc, SDL_GetError()); return 1; }
+
+    g_frameskip = picker_cfg_int("frameskip", 0);   /* config frameskip=N (0=off); modest on CPU-bound games */
+    if (g_frameskip < 0) g_frameskip = 0;
+    if (g_frameskip > 9) g_frameskip = 9;
+    plog("frameskip=%d", g_frameskip);
 
     retro_set_environment(environment);
     retro_set_video_refresh(video_refresh);

@@ -42,6 +42,7 @@ void picker_quit(void);                 /* close font, controllers, SDL */
 const char *picker_content_dir(void);   /* "content="/"roms=" line, or <data_dir>/<noun>s default */
 const char *picker_autoload(void);      /* "autoload=" value, or "" */
 int         picker_rotate(void);         /* "rotate=" (1 default; 0 if "off") */
+int         picker_cfg_int(const char *key, int def); /* read a host-defined integer "key=" from config.txt */
 
 /* Scan the content dir, show the menu (or the help/empty screen), and return the chosen item's
  * name WITHOUT extension (pointer valid until the next picker_run), or NULL if the user quit. */

@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <SDL.h>
 #include "libretro.h"
 #include "picker/picker.h"
@@ -175,6 +176,69 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
     return SDL_GameControllerGetButton(g, b) ? 1 : 0;
 }
 
+/* ---- save states (FBNeo retro_serialize), per game at <data_dir>/states/<set>.state ---- */
+
+static void state_path(const char *set, char *out, size_t n)
+{
+    char dir[700];
+    snprintf(dir, sizeof(dir), "%s/states", DATA_DIR);
+    mkdir(dir, 0777);   /* ok if it already exists */
+    snprintf(out, n, "%s/%s.state", dir, set);
+}
+
+static void do_savestate(const char *set)
+{
+    size_t sz = retro_serialize_size();
+    void *buf;
+    char p[800];
+    FILE *f;
+    if (!sz) { picker_message("Save states not supported:", set); return; }
+    buf = malloc(sz);
+    if (!buf) return;
+    if (retro_serialize(buf, sz)) {
+        state_path(set, p, sizeof(p));
+        f = fopen(p, "wb");
+        if (f) { fwrite(buf, 1, sz, f); fclose(f); picker_message("State saved:", set); plog("state saved %s (%u b)", set, (unsigned)sz); }
+        else picker_message("State save failed (write):", set);
+    } else picker_message("State save failed:", set);
+    free(buf);
+}
+
+static void do_loadstate(const char *set)
+{
+    char p[800];
+    FILE *f;
+    long fsz;
+    void *buf;
+    state_path(set, p, sizeof(p));
+    f = fopen(p, "rb");
+    if (!f) { picker_message("No saved state:", set); return; }
+    fseek(f, 0, SEEK_END); fsz = ftell(f); fseek(f, 0, SEEK_SET);
+    buf = (fsz > 0) ? malloc((size_t)fsz) : NULL;
+    if (buf && fread(buf, 1, (size_t)fsz, f) == (size_t)fsz && retro_unserialize(buf, (size_t)fsz))
+        { picker_message("State loaded:", set); plog("state loaded %s (%ld b)", set, fsz); }
+    else picker_message("State load failed:", set);
+    free(buf); fclose(f);
+}
+
+/* In-game: hold BOTH triggers (ZL+ZR), then Y = quicksave, A = quickload. Edge-detected; the
+ * both-triggers gate makes an accidental trigger during play very unlikely. */
+static void savestate_poll(const char *set)
+{
+    SDL_GameController *g = picker_pad(0);
+    static int prev_save, prev_load;
+    int save = 0, load = 0;
+    if (g &&
+        SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  > 16000 &&
+        SDL_GameControllerGetAxis(g, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000) {
+        save = SDL_GameControllerGetButton(g, SDL_CONTROLLER_BUTTON_Y);
+        load = SDL_GameControllerGetButton(g, SDL_CONTROLLER_BUTTON_A);
+    }
+    if (save && !prev_save) do_savestate(set);
+    if (load && !prev_load) do_loadstate(set);
+    prev_save = save; prev_load = load;
+}
+
 /* ---- one game ---- */
 
 static int load_and_play(const char *set)
@@ -211,6 +275,7 @@ static int load_and_play(const char *set)
     while (!want_quit && !want_menu) {
         Uint32 t0 = SDL_GetTicks(), dt, budget;
         input_poll();
+        savestate_poll(set);
         retro_run();
         budget = (Uint32)(1000.0 / (av.timing.fps > 1 ? av.timing.fps : 60.0));
         dt = SDL_GetTicks() - t0;
@@ -229,6 +294,7 @@ int main(int argc, char **argv)
         "Buttons: A B X Y face, L R shoulders, L2 R2 triggers",
         "Start: +   Coin/Select: -",
         "Return to this menu: hold + and - together",
+        "Save state: hold ZL+ZR + Y    Load state: hold ZL+ZR + A",
         "2 players: GamePad, Pro Controller, or Wiimote+Classic",
         NULL
     };

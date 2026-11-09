@@ -118,9 +118,12 @@ static Uint32 sdl_fmt_for(enum retro_pixel_format f)
     return SDL_PIXELFORMAT_ARGB1555; /* 0RGB1555 */
 }
 
+static Uint64 g_present_ticks;   /* diag: perf-counter ticks spent presenting this frame */
 static void video_refresh(const void *data, unsigned w, unsigned h, size_t pitch)
 {
+    Uint64 t = SDL_GetPerformanceCounter();
     picker_present(data, w, h, (unsigned)pitch, sdl_fmt_for(pixfmt), picker_rotate() ? rotation : 0);
+    g_present_ticks += SDL_GetPerformanceCounter() - t;
 }
 
 static void audio_sample(int16_t l, int16_t r)
@@ -307,15 +310,27 @@ static int load_and_play(const char *set)
         Uint32 frame_bytes  = (Uint32)(rate / fps + 1) * want.channels * sizeof(int16_t);
         Uint32 target_bytes = frame_bytes * 4;   /* ~4 frames (~67 ms) of headroom */
         int    audio_on = 0, warm = 0;
+        /* --- hw audio diagnostics over UDP: queue depth, underruns, fps, emul/present ms per ~2s --- */
+        Uint32 q_min = 0xffffffffu, q_max = 0; int under = 0, fc = 0;
+        Uint64 run_sum = 0, pres_sum = 0;
+        Uint32 stat_t = SDL_GetTicks();
 
         while (!want_quit && !want_menu) {
             Uint32 t0 = SDL_GetTicks();
             input_poll();
             savestate_poll(set);
+            g_present_ticks = 0;
+            Uint64 r0 = SDL_GetPerformanceCounter();
             retro_run();
+            run_sum  += SDL_GetPerformanceCounter() - r0;   /* emulation + present */
+            pres_sum += g_present_ticks;                    /* present alone */
 
             if (adev) {
                 if (!audio_on && ++warm >= 4) { SDL_PauseAudioDevice(adev, 0); audio_on = 1; }
+                Uint32 q = SDL_GetQueuedAudioSize(adev);
+                if (q < q_min) q_min = q;
+                if (q > q_max) q_max = q;
+                if (q < frame_bytes) under++;        /* below one frame = about to starve */
                 /* if we've run ahead of the target depth, wait for the device to drain back to it;
                  * this locks the loop to the audio clock. A game that can't keep up never gets ahead,
                  * so it runs flat out (frameskip helps). Guard caps the wait so a bad reading can't stall. */
@@ -325,6 +340,17 @@ static int load_and_play(const char *set)
             } else {
                 Uint32 budget = (Uint32)(1000.0 / fps), dt = SDL_GetTicks() - t0;
                 if (dt < budget) SDL_Delay(budget - dt);   /* no audio device: wall-clock fallback */
+            }
+
+            if (++fc >= 120) {
+                Uint32 now = SDL_GetTicks(), el = now - stat_t > 0 ? now - stat_t : 1;
+                double pf = (double)SDL_GetPerformanceFrequency();
+                plog("aud q[%u..%u] under=%d/%d fps=%.1f emul=%.1f pres=%.1f tgt=%u",
+                     q_min, q_max, under, fc, fc * 1000.0 / el,
+                     (double)(run_sum - pres_sum) * 1000.0 / pf / fc,
+                     (double)pres_sum * 1000.0 / pf / fc, target_bytes);
+                q_min = 0xffffffffu; q_max = 0; under = 0; fc = 0;
+                run_sum = 0; pres_sum = 0; stat_t = now;
             }
         }
     }

@@ -60,6 +60,17 @@ static int m_gfx_size;
 static UINT32 *m_bitmaps;
 static rectangle m_clip;
 
+#ifdef CV1K_PROF
+/* blit-internal profiling: split the blit's time into upload vs draw (per-op), plus op counts,
+ * to measure the parallelizable fraction. Accumulated on the blitter thread; reset/read by the bench.
+ * Forward-declare OSGetSystemTime (like thready.h declares its coreinit fns) - the core isn't built
+ * with the wut include path. OSTime is int64_t. */
+extern "C" long long OSGetSystemTime(void);
+extern "C" { unsigned long long g_blit_upload_ticks = 0, g_blit_draw_ticks = 0;
+             unsigned long long g_blit_draw_pixels = 0;
+             unsigned g_blit_n_upload = 0, g_blit_n_draw = 0; }
+#endif
+
 static UINT64 epic12_device_blit_delay;
 static int m_blitter_busy;
 
@@ -772,6 +783,10 @@ static void gfx_draw(UINT32 *addr)
 	dimx    =   (w & 0x1fff) + 1;
 	dimy    =   (h & 0x0fff) + 1;
 
+#ifdef CV1K_PROF
+	g_blit_draw_pixels += (unsigned long long)dimx * (unsigned)dimy;
+#endif
+
 	// convert parameters to clr
 
 
@@ -1007,12 +1022,22 @@ static void gfx_exec()
 
 			case 0x2000:
 				addr -= 2;
+#ifdef CV1K_PROF
+				{ long long _t = OSGetSystemTime(); gfx_upload(&addr);
+				  g_blit_upload_ticks += OSGetSystemTime() - _t; g_blit_n_upload++; }
+#else
 				gfx_upload(&addr);
+#endif
 				break;
 
 			case 0x1000:
 				addr -= 2;
+#ifdef CV1K_PROF
+				{ long long _t = OSGetSystemTime(); gfx_draw(&addr);
+				  g_blit_draw_ticks += OSGetSystemTime() - _t; g_blit_n_draw++; }
+#else
 				gfx_draw(&addr);
+#endif
 				break;
 
 			default:

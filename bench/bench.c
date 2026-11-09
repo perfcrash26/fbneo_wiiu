@@ -466,6 +466,9 @@ static void prof_alarm_cb(OSAlarm *alarm, OSContext *ctx)
  * sampler_wiiu.cpp technique). Reset per steady window; emitted as [cv1k-prof] lines. */
 extern unsigned long long g_cv1k_prof_cpu, g_cv1k_prof_ymz, g_cv1k_prof_draw, g_cv1k_prof_blitwait, g_cv1k_prof_total;
 extern unsigned g_cv1k_prof_frames;
+/* blit-internal split (epic12.cpp, -DCV1K_PROF): upload vs draw time, op counts, draw pixels */
+extern unsigned long long g_blit_upload_ticks, g_blit_draw_ticks, g_blit_draw_pixels;
+extern unsigned g_blit_n_upload, g_blit_n_draw;
 
 static OSThread cvp_spinner[3];
 static uint8_t  cvp_spin_stack[3][16 * 1024] __attribute__((aligned(16)));
@@ -493,6 +496,8 @@ static void cv1k_prof_start(void)
 {
     g_cv1k_prof_cpu = g_cv1k_prof_ymz = g_cv1k_prof_draw = g_cv1k_prof_blitwait = g_cv1k_prof_total = 0;
     g_cv1k_prof_frames = 0;
+    g_blit_upload_ticks = g_blit_draw_ticks = g_blit_draw_pixels = 0;
+    g_blit_n_upload = g_blit_n_draw = 0;
     if (g_sh3_ophist) Sh3OphistReset();
     /* spinners are created once and left running for the whole process (priority 31 costs nothing);
      * no stop/join, which hung on a console in nulldc. Each window reads an idle delta. */
@@ -532,6 +537,11 @@ static void cv1k_prof_report(const char *set)
          set, f, tot / 1000.0 / f, cpu / 1000.0 / f, ymz / 1000.0 / f, draw / 1000.0 / f, wait / 1000.0 / f, other / 1000.0 / f);
     blog("CV1KPROF %s pct_of_frame cpu=%.1f ymz=%.1f draw=%.1f blitwait=%.1f other=%.1f",
          set, 100 * cpu / den, 100 * ymz / den, 100 * draw / den, 100 * wait / den, 100 * other / den);
+    /* blit-internal: upload vs draw (the draw part is what parallelizing across cores would speed up) */
+    blog("BLITPROF %s upload_ms=%.3f draw_ms=%.3f n_up=%u n_draw=%u draw_mpix=%.2f",
+         set, (double)OSTicksToMicroseconds((OSTime)g_blit_upload_ticks) / 1000.0 / f,
+         (double)OSTicksToMicroseconds((OSTime)g_blit_draw_ticks) / 1000.0 / f,
+         g_blit_n_upload / f, g_blit_n_draw / f, (double)g_blit_draw_pixels / f / 1e6);
     blog("CV1KUTIL %s busy_pct core0=%.1f core1=%.1f core2=%.1f",
          set, 100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id0) / spanus,
          100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id1) / spanus,

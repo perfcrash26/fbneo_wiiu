@@ -407,11 +407,14 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
  * caught only 8 samples. The decrementer-driven alarm never touches the thread scheduler. */
 static int profile_on;
 static int pace_on;   /* config pace=1: sleep out each frame to 60fps so CV1KUTIL shows true core idle */
+static int ab_blitsplit;  /* config abblit=1: run each set twice, blitsplit 0 then 1, for a same-scene A/B */
 extern int g_sh3_optable;   /* core (sh4.cpp): SH-3 dispatch optable, default on; config optable=0 to A/B */
 extern int g_sh3_ophist;    /* core: guest opcode-execution histogram on/off (config ophist=1) */
 extern void Sh3OphistReset(void);
 extern unsigned long long Sh3OphistTop(unsigned int *ptrs, unsigned int *counts, int maxn);
 extern int g_sh3_timerfast;  /* core: TMU !running prescale shortcut, default on; config timerfast=0 to A/B */
+extern int g_blit_split;     /* epic12: split the blit across core0+core2, default on; config blitsplit=0 to A/B */
+extern int g_blit_mid;       /* epic12: split row in the 240-tall display (default 120); config blitmid=N */
 #ifdef __WIIU__
 #define PROF_SLOTS 65536
 static uint32_t prof_pc[PROF_SLOTS], prof_count[PROF_SLOTS];
@@ -869,6 +872,12 @@ static void read_config(void)
             g_sh3_ophist = atoi(eq);
         else if (!strcmp(buf, "timerfast"))
             g_sh3_timerfast = atoi(eq);
+        else if (!strcmp(buf, "blitsplit"))
+            g_blit_split = atoi(eq);
+        else if (!strcmp(buf, "abblit"))
+            ab_blitsplit = atoi(eq);
+        else if (!strcmp(buf, "blitmid"))
+            g_blit_mid = atoi(eq);
         else if (!strcmp(buf, "only"))
             snprintf(only_set, sizeof(only_set), "%s", eq);
     }
@@ -911,8 +920,8 @@ int main(int argc, char **argv)
     snprintf(path, sizeof(path), "%s/prof", bench_dir);
     if (profile_on)
         mkdir(path, 0777);
-    blog("fbneo_bench start: frames=%d profile=%d pace=%d optable=%d roms=%s system=%s mem_used_kb=%u", total_frames,
-         profile_on, pace_on, g_sh3_optable, roms_dir, sys_dir, used_kb());
+    blog("fbneo_bench start: frames=%d profile=%d pace=%d optable=%d blitsplit=%d roms=%s system=%s mem_used_kb=%u", total_frames,
+         profile_on, pace_on, g_sh3_optable, g_blit_split, roms_dir, sys_dir, used_kb());
 
     snprintf(path, sizeof(path), "%s/list.txt", bench_dir);
     f = fopen(path, "r");
@@ -976,7 +985,13 @@ int main(int argc, char **argv)
 #endif
         if (done_flag[i])
             continue;
-        run_set(sets[i]);
+        if (ab_blitsplit) {
+            /* same-scene A/B: deterministic scripted input means both passes see identical frames */
+            blog("ABBLIT %s pass=1 blitsplit=0", sets[i]); g_blit_split = 0; run_set(sets[i]);
+            blog("ABBLIT %s pass=2 blitsplit=1", sets[i]); g_blit_split = 1; run_set(sets[i]);
+        } else {
+            run_set(sets[i]);
+        }
         done_count++;
     }
     blog("BENCH_DONE ran=%d", done_count);

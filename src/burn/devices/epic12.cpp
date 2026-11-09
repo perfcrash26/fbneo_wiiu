@@ -307,12 +307,84 @@ static void blitter_delay_callback(int)
 	//bprintf(0, _T("cyc @ blitdelay callback: %d\n"), Sh3TotalCycles());
 }
 
-static void gfx_exec(); // forward
+static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int phase); // forward
+
+/* ---- experimental core0+core2 blitter split (runtime flag g_blit_split, config "blitsplit") ----
+ * Profiling showed CV1000 gameplay is epic12-blitter-bound: the blitter thread (core2) saturates
+ * while core0 sits idle. The blit is ~99% draw-pixels, ~1 upload/frame. So split the 240-tall
+ * display into two Y-bands - core2 (this thread) draws the top, a persistent core0 helper draws the
+ * bottom - each walking the full list clipped to its band. Measure the win via CV1KUTIL + frame_ms. */
+#ifndef OS_THREAD_ATTRIB_AFFINITY_CPU0
+#define OS_THREAD_ATTRIB_AFFINITY_CPU0 (1 << 0)
+#endif
+extern "C" long long OSGetSystemTime(void);   // for the adaptive-balance timing (redecl ok)
+extern "C" { int g_blit_split = 1; }    // 1 = split across core0+core2 (bench config blitsplit=0 to A/B)
+extern "C" { int g_blit_mid = 120; }    // split row within the 240-tall display; <120 gives core0 more
+                                         // work (core2 also carries uploads+sync). bench config blitmid=N.
+static OSThread  *blit0_thread;
+static OSSemaphore blit0_start, blit0_done;
+static rectangle  blit0_clip;
+static int         blit0_ylo, blit0_yhi;
+static volatile int blit0_ready;
+static volatile long long blit0_ticks;   // time core0 spent on its band (for adaptive balance)
+
+static int blit0_main(int, const char **)
+{
+	for (;;) {
+		OSWaitSemaphore(&blit0_start);                           // parent set band + signalled
+		long long t = OSGetSystemTime();
+		gfx_exec_band(&blit0_clip, blit0_ylo, blit0_yhi, false, 2); // bottom band, draws only
+		blit0_ticks = OSGetSystemTime() - t;
+		OSSignalSemaphore(&blit0_done);
+	}
+	return 0;
+}
+
+static void blit_split_init()
+{
+	if (blit0_ready) return;
+	OSInitSemaphore(&blit0_start, 0);
+	OSInitSemaphore(&blit0_done, 0);
+	unsigned char *stack = (unsigned char *)memalign(16, 64 * 1024);
+	blit0_thread = (OSThread *)memalign(16, sizeof(OSThread));
+	if (stack && blit0_thread &&
+	    OSCreateThread(blit0_thread, blit0_main, 0, NULL, stack + 64 * 1024, 64 * 1024, 16,
+	                   OS_THREAD_ATTRIB_AFFINITY_CPU0)) {
+		OSResumeThread(blit0_thread);
+		blit0_ready = 1;
+	}
+}
 
 static void run_blitter_cb()
 {
 	epic12_device_blit_delay = 0;
-	gfx_exec();
+	if (g_blit_split && blit0_ready) {
+		/* uploads pre-pass, single-threaded: all textures land in m_bitmaps BEFORE either core
+		 * reads them, so the parallel draws never race an in-flight upload (the map-selector bug). */
+		rectangle upclip;
+		gfx_exec_band(&upclip, 0, 0x1000 - 1, true, 1);  // uploads only
+
+		const int mid = m_gfx_clip_y_shadowcopy + g_blit_mid;   // split row
+		blit0_ylo = mid; blit0_yhi = 0x1000 - 1;         // bottom band -> core0 (draws only)
+		OSSignalSemaphore(&blit0_start);
+		rectangle topclip;
+		long long t = OSGetSystemTime();
+		gfx_exec_band(&topclip, 0, mid - 1, true, 2);    // top band -> this thread (draws only)
+		long long top = OSGetSystemTime() - t;
+		OSWaitSemaphore(&blit0_done);
+		/* Adaptive load balance: nudge the split line so core2 (top, which also carries uploads+sync)
+		 * and core0 (bottom) take equal time, whatever the sprite distribution. Keeps the win on
+		 * top-heavy menus as well as spread-out gameplay. ~6% deadband; small step for stability. */
+		long long bot = blit0_ticks, sum = top + bot;
+		if (sum > 0) {
+			long long thresh = sum / 16;
+			if (top - bot > thresh && g_blit_mid > 48)  g_blit_mid -= 3;  // top slower -> shrink top
+			else if (bot - top > thresh && g_blit_mid < 200) g_blit_mid += 3;  // bottom slower -> grow top
+		}
+	} else {
+		rectangle clip;
+		gfx_exec_band(&clip, 0, 0x1000 - 1, true, 0);    // single-threaded, full screen, all ops
+	}
 }
 
 void epic12_exit()
@@ -364,6 +436,7 @@ void epic12_init(INT32 ram_size, UINT16 *ram, UINT8 *dippy)
 	epic12_set_blitter_sleep_on_busy(1);
 
 	thready.init(run_blitter_cb);
+	blit_split_init();   // bring up the core0 blitter helper (used when g_blit_split)
 
 	sh4_set_cave_blitter_delay_func(blitter_delay_callback);
 }
@@ -488,7 +561,7 @@ static void gfx_upload_shadow_copy(UINT32 *addr)
 	m_blit_idle_op_bytes = 0;
 }
 
-static void gfx_upload(UINT32 *addr)
+static void gfx_upload(UINT32 *addr, bool do_upload)
 {
 	UINT32 x,y, dst_p,dst_x_start,dst_y_start, dimx,dimy;
 	UINT32 *dst;
@@ -511,6 +584,10 @@ static void gfx_upload(UINT32 *addr)
 	dimx = (READ_NEXT_WORD(addr) & 0x1fff) + 1;
 	dimy = (READ_NEXT_WORD(addr) & 0x0fff) + 1;
 
+	/* draw-only pass of the split: skip the texel data (already uploaded in the pre-pass), just
+	 * advance the list pointer past it (READ_NEXT_WORD steps 2 bytes per word). */
+	if (!do_upload) { *addr += (UINT32)dimx * dimy * 2; return; }
+
 	//bprintf(0, _T("GFX COPY: DST %02X,%02X,%03X DIM %02X,%03X\n"), dst_p,dst_x_start,dst_y_start, dimx,dimy);
 
 	for (y = 0; y < dimy; y++)
@@ -531,7 +608,7 @@ static void gfx_upload(UINT32 *addr)
 	}
 }
 
-#define draw_params &m_clip, m_bitmaps,src_x,src_y, x,y, dimx,dimy, flipy, s_alpha, d_alpha, &tint_clr
+#define draw_params clip, m_bitmaps,src_x,src_y, x,y, dimx,dimy, flipy, s_alpha, d_alpha, &tint_clr
 
 
 
@@ -733,7 +810,7 @@ static void gfx_draw_shadow_copy(UINT32 *addr)
 	m_blit_delay_ns += num_vram_clk * EP1C_VRAM_CLK_NANOSEC;
 }
 
-static void gfx_draw(UINT32 *addr)
+static void gfx_draw(UINT32 *addr, const rectangle *clip, bool do_draw)
 {
 	int x,y, dimx,dimy, flipx,flipy;//, src_p;
 	int trans,blend, s_mode, d_mode;
@@ -750,6 +827,8 @@ static void gfx_draw(UINT32 *addr)
 	UINT16 h        =   READ_NEXT_WORD(addr);
 	UINT16 tint_r   =   READ_NEXT_WORD(addr);
 	UINT16 tint_gb  =   READ_NEXT_WORD(addr);
+
+	if (!do_draw) return;   /* upload-only pass: list pointer now advanced past this draw, do nothing */
 
 	// 0: +alpha
 	// 1: +source
@@ -994,13 +1073,19 @@ static void gfx_create_shadow_copy()
 }
 
 
-static void gfx_exec()
+/* One band's worth of the blit: walk the whole list, but clip every draw to [ylo,yhi] in Y
+ * (intersected with the game's clip). Two of these on two cores = a scanline split. Uploads run
+ * on every band (there's ~1/frame and it's idempotent) so each band's sequential walk has its
+ * textures. `primary` gates the CV1K_PROF per-op timers so two bands don't race on the counters. */
+/* phase: 0 = all ops (single-thread fallback), 1 = uploads only (pre-pass), 2 = draws only (split) */
+static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int phase)
 {
 	UINT32 addr = m_gfx_addr_shadowcopy & 0x1fffffff;
-	m_clip.set(m_gfx_clip_x_shadowcopy - EP1C_CLIP_MARGIN, m_gfx_clip_x_shadowcopy + 320 - 1 + EP1C_CLIP_MARGIN,
-			   m_gfx_clip_y_shadowcopy - EP1C_CLIP_MARGIN, m_gfx_clip_y_shadowcopy + 240 - 1 + EP1C_CLIP_MARGIN);
-
-//  logerror("GFX EXEC: %08X\n", addr);
+	const int cx0 = m_gfx_clip_x_shadowcopy - EP1C_CLIP_MARGIN;
+	const int cx1 = m_gfx_clip_x_shadowcopy + 320 - 1 + EP1C_CLIP_MARGIN;
+	const int cy0 = m_gfx_clip_y_shadowcopy - EP1C_CLIP_MARGIN;
+	const int cy1 = m_gfx_clip_y_shadowcopy + 240 - 1 + EP1C_CLIP_MARGIN;
+	clip->set(cx0, cx1, MAX(cy0, ylo), MIN(cy1, yhi));
 
 	while (1)
 	{
@@ -1014,29 +1099,30 @@ static void gfx_exec()
 
 			case 0xc000:
 				if (READ_NEXT_WORD(&addr)) // cliptype
-					m_clip.set(m_gfx_clip_x_shadowcopy - EP1C_CLIP_MARGIN, m_gfx_clip_x_shadowcopy + 320 - 1 + EP1C_CLIP_MARGIN,
-							   m_gfx_clip_y_shadowcopy - EP1C_CLIP_MARGIN, m_gfx_clip_y_shadowcopy + 240 - 1 + EP1C_CLIP_MARGIN);
+					clip->set(cx0, cx1, MAX(cy0, ylo), MIN(cy1, yhi));
 				else
-					m_clip.set(0, 0x2000-1, 0, 0x1000-1);
+					clip->set(0, 0x2000-1, MAX(0, ylo), MIN(0x1000-1, yhi));
 				break;
 
-			case 0x2000:
+			case 0x2000:   /* upload: done in the uploads pass (phase!=2) */
 				addr -= 2;
 #ifdef CV1K_PROF
-				{ long long _t = OSGetSystemTime(); gfx_upload(&addr);
+				if (primary) { long long _t = OSGetSystemTime(); gfx_upload(&addr, phase != 2);
 				  g_blit_upload_ticks += OSGetSystemTime() - _t; g_blit_n_upload++; }
+				else gfx_upload(&addr, phase != 2);
 #else
-				gfx_upload(&addr);
+				(void)primary; gfx_upload(&addr, phase != 2);
 #endif
 				break;
 
-			case 0x1000:
+			case 0x1000:   /* draw: done in the draw pass(es) (phase!=1) */
 				addr -= 2;
 #ifdef CV1K_PROF
-				{ long long _t = OSGetSystemTime(); gfx_draw(&addr);
+				if (primary) { long long _t = OSGetSystemTime(); gfx_draw(&addr, clip, phase != 1);
 				  g_blit_draw_ticks += OSGetSystemTime() - _t; g_blit_n_draw++; }
+				else gfx_draw(&addr, clip, phase != 1);
 #else
-				gfx_draw(&addr);
+				gfx_draw(&addr, clip, phase != 1);
 #endif
 				break;
 

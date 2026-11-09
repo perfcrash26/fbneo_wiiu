@@ -330,6 +330,7 @@ int main(int argc, char **argv)
         fbneo_controls
     };
     char autoload[64] = {0};
+    int autoloaded = 0;
     int rc;
     (void)argc; (void)argv;
 #ifdef __WIIU__
@@ -360,7 +361,8 @@ int main(int argc, char **argv)
 
     while (!want_quit) {
         const char *set;
-        if (autoload[0]) { set = autoload; autoload[0] = 0; }
+        /* autoload once; a separate flag (not clearing the buffer, which `set` aliases) prevents re-boot */
+        if (autoload[0] && !autoloaded) { set = autoload; autoloaded = 1; }
         else {
             set = picker_run();
             if (!set) break;

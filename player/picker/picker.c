@@ -15,6 +15,7 @@ static const picker_cfg *g_cfg;
 static SDL_Window   *g_win;
 static SDL_Renderer *g_ren;
 static TTF_Font     *g_font;
+static TTF_Font     *g_font_big;   /* larger font for the game-list rows (legibility on a TV) */
 static SDL_Texture  *g_tex;
 static unsigned      g_tex_w, g_tex_h;
 static Uint32        g_tex_fmt;
@@ -43,19 +44,20 @@ static void mkdirs(const char *path)
     mkdir(tmp, 0777);
 }
 
-static void draw_text(int x, int y, SDL_Color c, const char *s)
+static void draw_text_f(TTF_Font *font, int x, int y, SDL_Color c, const char *s)
 {
     SDL_Surface *surf;
     SDL_Texture *t;
     SDL_Rect dst;
-    if (!g_font || !s || !*s) return;
-    surf = TTF_RenderUTF8_Blended(g_font, s, c);
+    if (!font || !s || !*s) return;
+    surf = TTF_RenderUTF8_Blended(font, s, c);
     if (!surf) return;
     t = SDL_CreateTextureFromSurface(g_ren, surf);
     dst.x = x; dst.y = y; dst.w = surf->w; dst.h = surf->h;
     SDL_FreeSurface(surf);
     if (t) { SDL_RenderCopy(g_ren, t, NULL, &dst); SDL_DestroyTexture(t); }
 }
+static void draw_text(int x, int y, SDL_Color c, const char *s) { draw_text_f(g_font, x, y, c, s); }
 
 /* ---- controllers ---- */
 
@@ -294,7 +296,7 @@ static void draw_help(void)
 
     /* controls: the generic menu keys, then the app's in-game map */
     draw_text(90, y, head, "Menu:"); y += 32;
-    draw_text(120, y, white, "Up/Down or left stick move   A start   Y help   hold +/- quit"); y += 40;
+    draw_text(120, y, white, "Up/Down move   A start   Y help   B back   hold +/- quit"); y += 40;
     if (g_cfg->controls) {
         draw_text(90, y, head, "In game:"); y += 32;
         for (i = 0; g_cfg->controls[i]; i++) { draw_text(120, y, white, g_cfg->controls[i]); y += 32; }
@@ -325,7 +327,8 @@ static void help_screen(void)
 
 const char *picker_run(void)
 {
-    const int VIS = 15, ROWH = 36, X = 90, Y0 = 130;
+    const int VIS = 11, ROWH = 50, X = 90, Y0 = 120;   /* row height/count sized for the larger list font */
+    TTF_Font *lf = g_font_big ? g_font_big : g_font;
     SDL_Color head = {120,200,255,255}, white = {225,225,225,255}, hi = {255,215,70,255};
     int sel = 0, top = 0, a_prev = 1, y_prev = 1, qhold = 0, armed = 0, dir_prev = 0;
     Uint32 nav_next = 0;
@@ -387,7 +390,7 @@ const char *picker_run(void)
                 const char *pfx = idx == sel ? "> " : "   ";
                 if (g_label[idx][0]) snprintf(buf, sizeof(buf), "%s%s   (%s)", pfx, g_sets[idx], g_label[idx]);
                 else                 snprintf(buf, sizeof(buf), "%s%s", pfx, g_sets[idx]);
-                draw_text(X, Y0 + i * ROWH, idx == sel ? hi : white, buf);
+                draw_text_f(lf, X, Y0 + i * ROWH, idx == sel ? hi : white, buf);
             }
             snprintf(buf, sizeof(buf), "%d / %d", sel + 1, g_nsets);
             draw_text(X, Y0 + VIS * ROWH + 10, head, buf);
@@ -411,6 +414,7 @@ int picker_init(const picker_cfg *cfg)
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
     if (TTF_Init() == 0)
         g_font = TTF_OpenFont(cfg->font_file, 26);   /* font failure is non-fatal (text just won't draw) */
+        g_font_big = TTF_OpenFont(cfg->font_file, 38);  /* game list; falls back to g_font below if NULL */
     open_pads();
     load_config();
     return 0;
@@ -423,6 +427,7 @@ void picker_quit(void)
     for (i = 0; i < g_nsets; i++) { free(g_sets[i]); g_sets[i] = NULL; }
     g_nsets = 0;
     for (i = 0; i < 2; i++) if (g_pads[i]) { SDL_GameControllerClose(g_pads[i]); g_pads[i] = NULL; }
+    if (g_font_big) { TTF_CloseFont(g_font_big); g_font_big = NULL; }
     if (g_font) { TTF_CloseFont(g_font); g_font = NULL; }
     TTF_Quit();
     SDL_Quit();

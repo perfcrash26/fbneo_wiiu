@@ -295,17 +295,38 @@ static int load_and_play(const char *set)
     want.format = AUDIO_S16SYS;
     want.channels = 2;
     want.samples = 1024;
-    adev = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
-    if (adev) SDL_PauseAudioDevice(adev, 0);
+    adev = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);   /* opens paused; started after a prebuffer */
 
-    while (!want_quit && !want_menu) {
-        Uint32 t0 = SDL_GetTicks(), dt, budget;
-        input_poll();
-        savestate_poll(set);
-        retro_run();
-        budget = (Uint32)(1000.0 / (av.timing.fps > 1 ? av.timing.fps : 60.0));
-        dt = SDL_GetTicks() - t0;
-        if (dt < budget) SDL_Delay(budget - dt);
+    /* Sync emulation to the audio queue. The old loop paced video to a wall-clock timer while
+     * audio played off the independent 48kHz hardware clock; the two drift and the small queue
+     * starves, which is what makes the sound buzzy/crackly. Instead: build a short prebuffer,
+     * then let the queue depth pace the frame loop so the device never underruns. */
+    {
+        int    rate = want.freq > 1 ? want.freq : 48000;
+        double fps  = av.timing.fps > 1 ? av.timing.fps : 60.0;
+        Uint32 frame_bytes  = (Uint32)(rate / fps + 1) * want.channels * sizeof(int16_t);
+        Uint32 target_bytes = frame_bytes * 4;   /* ~4 frames (~67 ms) of headroom */
+        int    audio_on = 0, warm = 0;
+
+        while (!want_quit && !want_menu) {
+            Uint32 t0 = SDL_GetTicks();
+            input_poll();
+            savestate_poll(set);
+            retro_run();
+
+            if (adev) {
+                if (!audio_on && ++warm >= 4) { SDL_PauseAudioDevice(adev, 0); audio_on = 1; }
+                /* if we've run ahead of the target depth, wait for the device to drain back to it;
+                 * this locks the loop to the audio clock. A game that can't keep up never gets ahead,
+                 * so it runs flat out (frameskip helps). Guard caps the wait so a bad reading can't stall. */
+                for (int guard = 0; audio_on && !want_quit && !want_menu && guard < 40 &&
+                                    SDL_GetQueuedAudioSize(adev) > target_bytes; guard++)
+                    SDL_Delay(1);
+            } else {
+                Uint32 budget = (Uint32)(1000.0 / fps), dt = SDL_GetTicks() - t0;
+                if (dt < budget) SDL_Delay(budget - dt);   /* no audio device: wall-clock fallback */
+            }
+        }
     }
 
     if (adev) { SDL_CloseAudioDevice(adev); adev = 0; }

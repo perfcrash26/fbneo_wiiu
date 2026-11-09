@@ -176,7 +176,16 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
     return SDL_GameControllerGetButton(g, b) ? 1 : 0;
 }
 
-/* ---- save states (FBNeo retro_serialize), per game at <data_dir>/states/<set>.state ---- */
+/* ---- save states (FBNeo retro_serialize), per game at <data_dir>/states/<set>.state ----
+ * zlib-compressed: CV1000 states embed the 128MB epic12 framebuffer (mostly empty), which both
+ * fills the card and makes the SD write take ~10s uncompressed. zlib (linked from the fbneo core;
+ * declared here to skip a header-path dependency) shrinks it to a few MB -> near-instant save/load. */
+extern int compress2(unsigned char *dest, unsigned long *destLen,
+                     const unsigned char *source, unsigned long sourceLen, int level);
+extern int uncompress(unsigned char *dest, unsigned long *destLen,
+                     const unsigned char *source, unsigned long sourceLen);
+extern unsigned long compressBound(unsigned long sourceLen);
+#define STATE_MAGIC 0x46425331u   /* "FBS1" - compressed state file */
 
 static void state_path(const char *set, char *out, size_t n)
 {
@@ -189,36 +198,53 @@ static void state_path(const char *set, char *out, size_t n)
 static void do_savestate(const char *set)
 {
     size_t sz = retro_serialize_size();
-    void *buf;
+    unsigned char *buf = NULL, *cbuf = NULL;
+    unsigned long clen;
     char p[800];
     FILE *f;
     if (!sz) { picker_message("Save states not supported:", set); return; }
     buf = malloc(sz);
     if (!buf) return;
-    if (retro_serialize(buf, sz)) {
+    if (!retro_serialize(buf, sz)) { picker_message("State save failed:", set); free(buf); return; }
+    clen = compressBound(sz);
+    cbuf = malloc(clen);
+    if (cbuf && compress2(cbuf, &clen, buf, sz, 1) == 0) {   /* level 1 = fast; the data is very sparse */
         state_path(set, p, sizeof(p));
         f = fopen(p, "wb");
-        if (f) { fwrite(buf, 1, sz, f); fclose(f); picker_message("State saved:", set); plog("state saved %s (%u b)", set, (unsigned)sz); }
-        else picker_message("State save failed (write):", set);
-    } else picker_message("State save failed:", set);
-    free(buf);
+        if (f) {
+            unsigned int hdr[3] = { STATE_MAGIC, (unsigned int)sz, (unsigned int)clen };
+            fwrite(hdr, sizeof(hdr), 1, f);
+            fwrite(cbuf, 1, clen, f);
+            fclose(f);
+            picker_message("State saved:", set);
+            plog("state saved %s (%u -> %lu b)", set, (unsigned)sz, clen);
+        } else picker_message("State save failed (write):", set);
+    } else picker_message("State compress failed:", set);
+    free(buf); free(cbuf);
 }
 
 static void do_loadstate(const char *set)
 {
     char p[800];
     FILE *f;
-    long fsz;
-    void *buf;
+    unsigned int hdr[3];
+    unsigned char *buf = NULL, *cbuf = NULL;
+    unsigned long dlen;
     state_path(set, p, sizeof(p));
     f = fopen(p, "rb");
     if (!f) { picker_message("No saved state:", set); return; }
-    fseek(f, 0, SEEK_END); fsz = ftell(f); fseek(f, 0, SEEK_SET);
-    buf = (fsz > 0) ? malloc((size_t)fsz) : NULL;
-    if (buf && fread(buf, 1, (size_t)fsz, f) == (size_t)fsz && retro_unserialize(buf, (size_t)fsz))
-        { picker_message("State loaded:", set); plog("state loaded %s (%ld b)", set, fsz); }
+    if (fread(hdr, sizeof(hdr), 1, f) != 1 || hdr[0] != STATE_MAGIC) {
+        picker_message("Old/invalid state (re-save):", set); fclose(f); return;
+    }
+    buf  = malloc(hdr[1]);   /* original size */
+    cbuf = malloc(hdr[2]);   /* compressed size */
+    dlen = hdr[1];
+    if (buf && cbuf && fread(cbuf, 1, hdr[2], f) == (size_t)hdr[2] &&
+        uncompress(buf, &dlen, cbuf, hdr[2]) == 0 && dlen == hdr[1] &&
+        retro_unserialize(buf, hdr[1]))
+        { picker_message("State loaded:", set); plog("state loaded %s (%u b)", set, hdr[1]); }
     else picker_message("State load failed:", set);
-    free(buf); fclose(f);
+    free(buf); free(cbuf); fclose(f);
 }
 
 /* In-game: hold BOTH triggers (ZL+ZR), then Y = quicksave, A = quickload. Edge-detected; the

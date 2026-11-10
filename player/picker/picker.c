@@ -59,6 +59,32 @@ static void draw_text_f(TTF_Font *font, int x, int y, SDL_Color c, const char *s
 }
 static void draw_text(int x, int y, SDL_Color c, const char *s) { draw_text_f(g_font, x, y, c, s); }
 
+/* in-game quit hint: a banner shown over the game for a few seconds when a set starts, so players
+ * learn how to get back to the menu (HOME doesn't exit). Set by the host via picker_set_hint(). */
+static Uint32 g_hint_until = 0;
+static char   g_hint_text[96];
+
+void picker_set_hint(const char *text, unsigned ms)
+{
+    if (!text || !*text) { g_hint_until = 0; return; }
+    snprintf(g_hint_text, sizeof(g_hint_text), "%s", text);
+    g_hint_until = SDL_GetTicks() + ms;
+}
+
+static void draw_hint(void)
+{
+    int tw = 0, th = 0;
+    SDL_Rect bar;
+    SDL_Color fg = { 255, 235, 120, 255 };
+    if (!g_font || !g_hint_text[0] || SDL_GetTicks() >= g_hint_until) return;
+    if (TTF_SizeUTF8(g_font, g_hint_text, &tw, &th) != 0) return;
+    bar.w = 1280; bar.x = 0; bar.h = th + 20; bar.y = 720 - bar.h - 22;   /* banner across the bottom */
+    SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 175);
+    SDL_RenderFillRect(g_ren, &bar);
+    draw_text_f(g_font, (1280 - tw) / 2, bar.y + 10, fg, g_hint_text);
+}
+
 /* ---- controllers ---- */
 
 static void open_pads(void)
@@ -137,7 +163,8 @@ void picker_present(const void *data, unsigned w, unsigned h, unsigned pitch,
     }
     SDL_UpdateTexture(g_tex, NULL, data, (int)pitch);
 
-    SDL_GetRendererOutputSize(g_ren, &ww, &wh);
+    SDL_RenderGetLogicalSize(g_ren, &ww, &wh);          /* draw into the logical space (SDL scales to TV) */
+    if (ww == 0 || wh == 0) SDL_GetRendererOutputSize(g_ren, &ww, &wh);  /* fallback if logical size unset */
     rot90 = (rot_ccw == 1 || rot_ccw == 3);   /* letterbox to the DISPLAYED aspect */
     sa = rot90 ? (double)h / (double)w : (double)w / (double)h;
     da = (double)ww / (double)wh;
@@ -154,6 +181,7 @@ void picker_present(const void *data, unsigned w, unsigned h, unsigned pitch,
     } else {
         SDL_RenderCopyEx(g_ren, g_tex, NULL, &dst, rot_ccw == 2 ? 180.0 : 0.0, NULL, SDL_FLIP_NONE);
     }
+    draw_hint();                 /* quit banner over the game for the first few seconds */
     SDL_RenderPresent(g_ren);
 }
 
@@ -327,7 +355,8 @@ static void help_screen(void)
 
 const char *picker_run(void)
 {
-    const int VIS = 11, ROWH = 50, X = 90, Y0 = 120;   /* row height/count sized for the larger list font */
+    const int VIS = 12, ROWH = 48, X = 90, Y0 = 96;    /* logical 1280x720 now fills the TV; list spans
+                                                          ~96..682, clear of the overscan edge + the header */
     TTF_Font *lf = g_font_big ? g_font_big : g_font;
     SDL_Color head = {120,200,255,255}, white = {225,225,225,255}, hi = {255,215,70,255};
     int sel = 0, top = 0, a_prev = 1, y_prev = 1, qhold = 0, armed = 0, dir_prev = 0;
@@ -368,8 +397,8 @@ const char *picker_run(void)
             SDL_SetRenderDrawColor(g_ren, 18, 18, 28, 255);
             SDL_RenderClear(g_ren);
             snprintf(buf, sizeof(buf), "Starting  %s", g_sets[sel]);
-            draw_text(X, 300, hi, buf);
-            draw_text(X, 344, white, "loading, please wait...");
+            draw_text_f(lf, X, 300, hi, buf);                                /* big legible font */
+            draw_text_f(lf, X, 352, white, "loading, please wait...");
             SDL_RenderPresent(g_ren);
             return g_sets[sel];
         }
@@ -412,9 +441,14 @@ int picker_init(const picker_cfg *cfg)
     g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED);
     if (!g_ren) return 3;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    if (TTF_Init() == 0)
+    /* Render everything in a fixed 1280x720 logical space; SDL scales it up to the real TV output
+     * (e.g. 1080p). Without this the menu drew 1:1 into the top-left 2/3 of a 1080p panel - unfilled
+     * and small. The game present (picker_present) draws in this same logical space. */
+    SDL_RenderSetLogicalSize(g_ren, 1280, 720);
+    if (TTF_Init() == 0) {
         g_font = TTF_OpenFont(cfg->font_file, 26);   /* font failure is non-fatal (text just won't draw) */
         g_font_big = TTF_OpenFont(cfg->font_file, 38);  /* game list; falls back to g_font below if NULL */
+    }
     open_pads();
     load_config();
     return 0;

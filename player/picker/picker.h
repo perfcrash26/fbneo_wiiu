@@ -61,4 +61,7 @@ void picker_present(const void *data, unsigned w, unsigned h, unsigned pitch,
 SDL_Renderer *picker_renderer(void);     /* for host-drawn screens, if needed */
 void picker_message(const char *line1, const char *line2); /* ~1.6s on-screen message */
 
+/* show a banner over the game for `ms` milliseconds (e.g. the quit combo); text "" clears it */
+void picker_set_hint(const char *text, unsigned ms);
+
 #endif /* PICKER_H */

@@ -292,6 +292,7 @@ static int load_and_play(const char *set)
     plog("av: %ux%u fps=%.2f rate=%.0f", av.geometry.base_width, av.geometry.base_height,
          av.timing.fps, av.timing.sample_rate);
     nFrameskip = g_frameskip + 1;   /* set per-game after load; skips the core draw on skipped frames */
+    picker_set_hint("Hold  +  and  -  together to return to the menu", 5000);   /* HOME doesn't exit */
 
     SDL_zero(want);
     want.freq = (int)av.timing.sample_rate;

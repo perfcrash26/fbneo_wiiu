@@ -408,6 +408,8 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
 static int profile_on;
 static int pace_on;   /* config pace=1: sleep out each frame to 60fps so CV1KUTIL shows true core idle */
 static int ab_blitsplit;  /* config abblit=1: run each set twice, blitsplit 0 then 1, for a same-scene A/B */
+static int sweep_mids[16];/* config sweepmid=48,72,...: run each set once per fixed g_blit_mid (balancer frozen) */
+static int n_sweep_mids;
 extern int g_sh3_optable;   /* core (sh4.cpp): SH-3 dispatch optable, default on; config optable=0 to A/B */
 extern int g_sh3_ophist;    /* core: guest opcode-execution histogram on/off (config ophist=1) */
 extern void Sh3OphistReset(void);
@@ -415,6 +417,7 @@ extern unsigned long long Sh3OphistTop(unsigned int *ptrs, unsigned int *counts,
 extern int g_sh3_timerfast;  /* core: TMU !running prescale shortcut, default on; config timerfast=0 to A/B */
 extern int g_blit_split;     /* epic12: split the blit across core0+core2, default on; config blitsplit=0 to A/B */
 extern int g_blit_mid;       /* epic12: split row in the 240-tall display (default 120); config blitmid=N */
+extern int g_blit_adaptive;  /* epic12: 1=auto-nudge g_blit_mid, 0=frozen (for fixed-mid sweeps) */
 #ifdef __WIIU__
 #define PROF_SLOTS 65536
 static uint32_t prof_pc[PROF_SLOTS], prof_count[PROF_SLOTS];
@@ -472,6 +475,10 @@ extern unsigned g_cv1k_prof_frames;
 /* blit-internal split (epic12.cpp, -DCV1K_PROF): upload vs draw time, op counts, draw pixels */
 extern unsigned long long g_blit_upload_ticks, g_blit_draw_ticks, g_blit_draw_pixels;
 extern unsigned g_blit_n_upload, g_blit_n_draw;
+extern unsigned long long g_blit_top_ticks, g_blit_bot_ticks;  /* per-band busy: core2 top vs core0 bottom */
+extern unsigned g_blit_band_frames;
+extern unsigned long long g_composite_ticks;  /* composite (epic12_draw_screen) time + which core runs it */
+extern unsigned g_composite_frames; extern int g_composite_core;
 
 static OSThread cvp_spinner[3];
 static uint8_t  cvp_spin_stack[3][16 * 1024] __attribute__((aligned(16)));
@@ -501,6 +508,8 @@ static void cv1k_prof_start(void)
     g_cv1k_prof_frames = 0;
     g_blit_upload_ticks = g_blit_draw_ticks = g_blit_draw_pixels = 0;
     g_blit_n_upload = g_blit_n_draw = 0;
+    g_blit_top_ticks = g_blit_bot_ticks = 0; g_blit_band_frames = 0;
+    g_composite_ticks = 0; g_composite_frames = 0; g_composite_core = -1;
     if (g_sh3_ophist) Sh3OphistReset();
     /* spinners are created once and left running for the whole process (priority 31 costs nothing);
      * no stop/join, which hung on a console in nulldc. Each window reads an idle delta. */
@@ -545,6 +554,14 @@ static void cv1k_prof_report(const char *set)
          set, (double)OSTicksToMicroseconds((OSTime)g_blit_upload_ticks) / 1000.0 / f,
          (double)OSTicksToMicroseconds((OSTime)g_blit_draw_ticks) / 1000.0 / f,
          g_blit_n_upload / f, g_blit_n_draw / f, (double)g_blit_draw_pixels / f / 1e6);
+    /* compute vs bandwidth: achieved blit memory throughput. ~12 B moved per blended pixel (src read
+     * + dst read-modify-write). Near MEM2 peak (~12.8 GB/s) => bandwidth-bound; well below => compute/
+     * latency-bound (prefetch/MEM1 would help). Mpix/s is given too so the byte estimate can be redone. */
+    {
+        double draw_us = (double)OSTicksToMicroseconds((OSTime)g_blit_draw_ticks);
+        double mpixps  = draw_us > 0 ? (double)g_blit_draw_pixels / draw_us : 0;   /* pixels per us = Mpix/s */
+        blog("BLITBW %s %.1f Mpix/s ~%.1f GB/s (12B/px, MEM2 peak ~12.8)", set, mpixps, mpixps * 12.0 / 1000.0);
+    }
     blog("CV1KUTIL %s busy_pct core0=%.1f core1=%.1f core2=%.1f",
          set, 100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id0) / spanus,
          100.0 - 100.0 * (double)OSTicksToMicroseconds((OSTime)id1) / spanus,
@@ -786,6 +803,21 @@ static void run_set(const char *set)
             double budget = 1000.0 / fps;
             blog("CV1KNEED %s core1_need_pct=%.0f steady_ms=%.2f budget_ms=%.2f paced=%d (>100 = over one core)",
                  set, budget > 0 ? steady_ms / budget * 100.0 : 0.0, steady_ms, budget, pace_on);
+            /* raw blit counters into the RESULT line (results.txt = card file, never UDP-truncated) so
+             * the compute-vs-bandwidth number survives: achieved MEM bandwidth = pix*12B / draw_us.
+             * At profile=0 these span the whole game (the per-window report that resets them never runs). */
+            snprintf(line + strlen(line), sizeof(line) - strlen(line),
+                     " blit_draw_pix=%llu blit_draw_us=%llu blit_ndraw=%u"
+                     " blit_top_us=%llu blit_bot_us=%llu blit_bandframes=%u blit_mid=%d"
+                     " comp_us=%llu comp_frames=%u comp_core=%d",
+                     (unsigned long long)g_blit_draw_pixels,
+                     (unsigned long long)OSTicksToMicroseconds((OSTime)g_blit_draw_ticks),
+                     g_blit_n_draw,
+                     (unsigned long long)OSTicksToMicroseconds((OSTime)g_blit_top_ticks),
+                     (unsigned long long)OSTicksToMicroseconds((OSTime)g_blit_bot_ticks),
+                     g_blit_band_frames, g_blit_mid,
+                     (unsigned long long)OSTicksToMicroseconds((OSTime)g_composite_ticks),
+                     g_composite_frames, g_composite_core);
         }
 #endif
     }
@@ -876,6 +908,18 @@ static void read_config(void)
             g_blit_split = atoi(eq);
         else if (!strcmp(buf, "abblit"))
             ab_blitsplit = atoi(eq);
+        else if (!strcmp(buf, "adaptive"))
+            g_blit_adaptive = atoi(eq);
+        else if (!strcmp(buf, "sweepmid")) {
+            char *p = eq;
+            n_sweep_mids = 0;
+            while (*p && n_sweep_mids < 16) {
+                sweep_mids[n_sweep_mids++] = atoi(p);
+                char *c = strchr(p, ',');
+                if (!c) break;
+                p = c + 1;
+            }
+        }
         else if (!strcmp(buf, "blitmid"))
             g_blit_mid = atoi(eq);
         else if (!strcmp(buf, "only"))
@@ -985,7 +1029,18 @@ int main(int argc, char **argv)
 #endif
         if (done_flag[i])
             continue;
-        if (ab_blitsplit) {
+        if (n_sweep_mids) {
+            /* fixed-mid sweep: freeze the balancer, run the set once per split row (plus blitsplit=0
+             * reference). RESULT line records blit_mid + per-core band/composite times. */
+            g_blit_split = 1; g_blit_adaptive = 0;
+            for (int m = 0; m < n_sweep_mids; m++) {
+                blog("SWEEP %s mid=%d", sets[i], sweep_mids[m]);
+                g_blit_mid = sweep_mids[m];
+                run_set(sets[i]);
+            }
+            blog("SWEEP %s blitsplit=0", sets[i]); g_blit_split = 0; run_set(sets[i]);
+            g_blit_split = 1;
+        } else if (ab_blitsplit) {
             /* same-scene A/B: deterministic scripted input means both passes see identical frames */
             blog("ABBLIT %s pass=1 blitsplit=0", sets[i]); g_blit_split = 0; run_set(sets[i]);
             blog("ABBLIT %s pass=2 blitsplit=1", sets[i]); g_blit_split = 1; run_set(sets[i]);

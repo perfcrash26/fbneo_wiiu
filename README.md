@@ -1,3 +1,10 @@
+> **Unofficial Wii U port.** This repository is **FBNeo Player**, a standalone Wii U port of
+> FinalBurn Neo. It is not the official FinalBurn Neo repository and is not affiliated with Team FBNeo.
+> For installing, controls and known issues, see [README-WiiU.md](README-WiiU.md). Please report
+> Wii U issues here, not upstream. The original FinalBurn Neo README follows.
+
+---
+
 # FinalBurn Neo
 Official Forum: https://neo-source.com
 

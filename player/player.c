@@ -4,8 +4,8 @@
  * picker, the rotation-aware blit, the help screen) lives in picker/ and has no FBNeo/libretro
  * knowledge; this file is the thin glue: the libretro callbacks and the per-game load/run loop.
  *
- * Paths on Wii U:  roms  <content= in config>, default fs:/vol/external01/wiiu/fbneo/roms/<set>.zip
- *                  config fs:/vol/external01/wiiu/fbneo/config.txt   (created on first run)
+ * Paths on Wii U:  roms  <content= in config>, default fs:/vol/external01/wiiu/fbneo_player/roms/<set>.zip
+ *                  config fs:/vol/external01/wiiu/fbneo_player/config.txt   (created on first run)
  *                  font   fs:/vol/content/Roboto-Regular.ttf         (bundled in the wuhb)
  */
 #include <stdio.h>
@@ -22,20 +22,19 @@
 #include <coreinit/time.h>
 #include <whb/log.h>
 #include <whb/log_cafe.h>
-#include <whb/log_udp.h>
 static OSTime g_log_epoch;	/* set in main() before the first plog() */
-static void log_udp_deinit(void) { WHBLogUdpDeinit(); }	/* void wrapper for atexit */
 #endif
 
 #ifdef __WIIU__
-#define DATA_DIR  "fs:/vol/external01/wiiu/fbneo"	/* standard Wii U per-app data path */
+#define DATA_DIR  "fs:/vol/external01/wiiu/fbneo_player"	/* standard Wii U per-app data path */
 #define FONT_FILE "fs:/vol/content/Roboto-Regular.ttf"	/* bundled in the wuhb */
+#define FBNEO_WIIU_VER "1.0.0.3-U1"	/* shown in the picker header; tracks the release tag */
 #else
 #define DATA_DIR  "."
 #define FONT_FILE "picker/Roboto-Regular.ttf"
 #endif
 #define SYS_DIR  DATA_DIR "/system"
-#define SAVE_DIR DATA_DIR "/player/saves"
+#define SAVE_DIR DATA_DIR "/saves"
 
 static void plog(const char *fmt, ...)
 {
@@ -45,8 +44,7 @@ static void plog(const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
 #ifdef __WIIU__
-    /* Tagged "[fbneo ...]" like bench.c so the shared UDP listener (port 4405) can tell these
-     * lines apart; WHBLogPrintf goes to both the Cafe/OSReport console and the UDP broadcast. */
+    /* WHBLogPrintf goes to the Cafe/OSReport console. */
     {
         uint64_t ms = OSTicksToMilliseconds(OSGetSystemTime() - g_log_epoch);
         WHBLogPrintf("[fbneo +%u.%03u] player: %s", (unsigned)(ms / 1000), (unsigned)(ms % 1000), buf);
@@ -118,12 +116,9 @@ static Uint32 sdl_fmt_for(enum retro_pixel_format f)
     return SDL_PIXELFORMAT_ARGB1555; /* 0RGB1555 */
 }
 
-static Uint64 g_present_ticks;   /* diag: perf-counter ticks spent presenting this frame */
 static void video_refresh(const void *data, unsigned w, unsigned h, size_t pitch)
 {
-    Uint64 t = SDL_GetPerformanceCounter();
     picker_present(data, w, h, (unsigned)pitch, sdl_fmt_for(pixfmt), picker_rotate() ? rotation : 0);
-    g_present_ticks += SDL_GetPerformanceCounter() - t;
 }
 
 static void audio_sample(int16_t l, int16_t r)
@@ -311,27 +306,15 @@ static int load_and_play(const char *set)
         Uint32 frame_bytes  = (Uint32)(rate / fps + 1) * want.channels * sizeof(int16_t);
         Uint32 target_bytes = frame_bytes * 4;   /* ~4 frames (~67 ms) of headroom */
         int    audio_on = 0, warm = 0;
-        /* --- hw audio diagnostics over UDP: queue depth, underruns, fps, emul/present ms per ~2s --- */
-        Uint32 q_min = 0xffffffffu, q_max = 0; int under = 0, fc = 0;
-        Uint64 run_sum = 0, pres_sum = 0;
-        Uint32 stat_t = SDL_GetTicks();
 
         while (!want_quit && !want_menu) {
             Uint32 t0 = SDL_GetTicks();
             input_poll();
             savestate_poll(set);
-            g_present_ticks = 0;
-            Uint64 r0 = SDL_GetPerformanceCounter();
             retro_run();
-            run_sum  += SDL_GetPerformanceCounter() - r0;   /* emulation + present */
-            pres_sum += g_present_ticks;                    /* present alone */
 
             if (adev) {
                 if (!audio_on && ++warm >= 4) { SDL_PauseAudioDevice(adev, 0); audio_on = 1; }
-                Uint32 q = SDL_GetQueuedAudioSize(adev);
-                if (q < q_min) q_min = q;
-                if (q > q_max) q_max = q;
-                if (q < frame_bytes) under++;        /* below one frame = about to starve */
                 /* if we've run ahead of the target depth, wait for the device to drain back to it;
                  * this locks the loop to the audio clock. A game that can't keep up never gets ahead,
                  * so it runs flat out (frameskip helps). Guard caps the wait so a bad reading can't stall. */
@@ -341,17 +324,6 @@ static int load_and_play(const char *set)
             } else {
                 Uint32 budget = (Uint32)(1000.0 / fps), dt = SDL_GetTicks() - t0;
                 if (dt < budget) SDL_Delay(budget - dt);   /* no audio device: wall-clock fallback */
-            }
-
-            if (++fc >= 120) {
-                Uint32 now = SDL_GetTicks(), el = now - stat_t > 0 ? now - stat_t : 1;
-                double pf = (double)SDL_GetPerformanceFrequency();
-                plog("aud q[%u..%u] under=%d/%d fps=%.1f emul=%.1f pres=%.1f tgt=%u",
-                     q_min, q_max, under, fc, fc * 1000.0 / el,
-                     (double)(run_sum - pres_sum) * 1000.0 / pf / fc,
-                     (double)pres_sum * 1000.0 / pf / fc, target_bytes);
-                q_min = 0xffffffffu; q_max = 0; under = 0; fc = 0;
-                run_sum = 0; pres_sum = 0; stat_t = now;
             }
         }
     }
@@ -373,7 +345,7 @@ int main(int argc, char **argv)
         NULL
     };
     static const picker_cfg cfg = {
-        "FBNeo", "rom", DATA_DIR, FONT_FILE, "zip", fbneo_system,
+        "FBNeo " FBNEO_WIIU_VER, "rom", DATA_DIR, FONT_FILE, "zip", fbneo_system,
         "Romsets must match FBNeo v1.0.0.3 (~Oct-2026 set); Neo Geo needs neogeo.zip",
         fbneo_controls
     };
@@ -383,14 +355,15 @@ int main(int argc, char **argv)
     (void)argc; (void)argv;
 #ifdef __WIIU__
     g_log_epoch = OSGetSystemTime();
-    WHBLogCafeInit();	/* mirror log lines to OSReport */
-    WHBLogUdpInit();	/* ...and broadcast them to the shared UDP listener (4405) */
-    atexit(log_udp_deinit);
+    WHBLogCafeInit();	/* log to OSReport */
 #endif
     plog("start");
 
     rc = picker_init(&cfg);
     if (rc) { plog("picker_init failed (%d): %s", rc, SDL_GetError()); return 1; }
+    mkdir(SYS_DIR, 0777);    /* picker_init created DATA_DIR; ok if these already exist */
+    mkdir(SAVE_DIR, 0777);
+    mkdir(DATA_DIR "/states", 0777);
 
     g_frameskip = picker_cfg_int("frameskip", 0);   /* config frameskip=N (0=off); modest on CPU-bound games */
     if (g_frameskip < 0) g_frameskip = 0;

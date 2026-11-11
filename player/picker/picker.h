@@ -24,7 +24,7 @@
 typedef struct {
     const char *app_name;      /* header text, e.g. "FBNeo" */
     const char *content_noun;  /* used in help text, e.g. "rom" (shown as "roms") */
-    const char *data_dir;      /* base data dir, e.g. "fs:/vol/external01/wiiu/fbneo" */
+    const char *data_dir;      /* base data dir, e.g. "fs:/vol/external01/wiiu/fbneo_player" */
     const char *font_file;     /* TTF path, e.g. "fs:/vol/content/Roboto-Regular.ttf" */
     const char *ext;           /* file extension to list, without the dot, e.g. "zip" */
     const char *(*label_for)(const char *name); /* optional per-item tag (e.g. system), or NULL */

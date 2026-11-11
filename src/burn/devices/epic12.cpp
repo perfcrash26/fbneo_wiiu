@@ -60,24 +60,6 @@ static int m_gfx_size;
 static UINT32 *m_bitmaps;
 static rectangle m_clip;
 
-#ifdef CV1K_PROF
-/* blit-internal profiling: split the blit's time into upload vs draw (per-op), plus op counts,
- * to measure the parallelizable fraction. Accumulated on the blitter thread; reset/read by the bench.
- * Forward-declare OSGetSystemTime (like thready.h declares its coreinit fns) - the core isn't built
- * with the wut include path. OSTime is int64_t. */
-extern "C" long long OSGetSystemTime(void);
-extern "C" { unsigned long long g_blit_upload_ticks = 0, g_blit_draw_ticks = 0;
-             unsigned long long g_blit_draw_pixels = 0;
-             unsigned g_blit_n_upload = 0, g_blit_n_draw = 0; }
-/* per-band busy time (core2 top vs core0 bottom) + frame count, to see whether the split is balanced
- * and whether g_blit_mid converged or clamped. The 78/45 util gap should show up here as top>>bot. */
-extern "C" { unsigned long long g_blit_top_ticks = 0, g_blit_bot_ticks = 0;
-             unsigned g_blit_band_frames = 0; }
-/* composite (epic12_draw_screen) attribution: how long it takes and WHICH core runs it. This is the
- * prime suspect for core2's extra 4-5ms/frame beyond its blit band. */
-extern "C" unsigned OSGetCoreId(void);
-extern "C" { unsigned long long g_composite_ticks = 0; unsigned g_composite_frames = 0; int g_composite_core = -1; }
-#endif
 
 static UINT64 epic12_device_blit_delay;
 static int m_blitter_busy;
@@ -328,8 +310,7 @@ static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int p
 extern "C" long long OSGetSystemTime(void);   // for the adaptive-balance timing (redecl ok)
 extern "C" { int g_blit_split = 1; }    // 1 = split across core0+core2 (bench config blitsplit=0 to A/B)
 extern "C" { int g_blit_mid = 120; }    // split row within the 240-tall display; <120 gives core0 more
-                                         // work (core2 also carries uploads+sync). bench config blitmid=N.
-extern "C" { int g_blit_adaptive = 1; } // 1 = auto-nudge g_blit_mid; 0 = freeze it (fixed-mid sweep)
+                                         // work (core2 also carries uploads+sync).
 static OSThread  *blit0_thread;
 static OSSemaphore blit0_start, blit0_done;
 static rectangle  blit0_clip;
@@ -385,10 +366,7 @@ static void run_blitter_cb()
 		 * and core0 (bottom) take equal time, whatever the sprite distribution. Keeps the win on
 		 * top-heavy menus as well as spread-out gameplay. ~6% deadband; small step for stability. */
 		long long bot = blit0_ticks, sum = top + bot;
-#ifdef CV1K_PROF
-		g_blit_top_ticks += top; g_blit_bot_ticks += bot; g_blit_band_frames++;
-#endif
-		if (sum > 0 && g_blit_adaptive) {
+		if (sum > 0) {
 			long long thresh = sum / 16;
 			if (top - bot > thresh && g_blit_mid > 48)  g_blit_mid -= 3;  // top slower -> shrink top
 			else if (bot - top > thresh && g_blit_mid < 200) g_blit_mid += 3;  // bottom slower -> grow top
@@ -874,9 +852,6 @@ static void gfx_draw(UINT32 *addr, const rectangle *clip, bool do_draw)
 	dimx    =   (w & 0x1fff) + 1;
 	dimy    =   (h & 0x0fff) + 1;
 
-#ifdef CV1K_PROF
-	g_blit_draw_pixels += (unsigned long long)dimx * (unsigned)dimy;
-#endif
 
 	// convert parameters to clr
 
@@ -1088,7 +1063,7 @@ static void gfx_create_shadow_copy()
 /* One band's worth of the blit: walk the whole list, but clip every draw to [ylo,yhi] in Y
  * (intersected with the game's clip). Two of these on two cores = a scanline split. Uploads run
  * on every band (there's ~1/frame and it's idempotent) so each band's sequential walk has its
- * textures. `primary` gates the CV1K_PROF per-op timers so two bands don't race on the counters. */
+ * textures. */
 /* phase: 0 = all ops (single-thread fallback), 1 = uploads only (pre-pass), 2 = draws only (split) */
 static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int phase)
 {
@@ -1118,24 +1093,12 @@ static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int p
 
 			case 0x2000:   /* upload: done in the uploads pass (phase!=2) */
 				addr -= 2;
-#ifdef CV1K_PROF
-				if (primary) { long long _t = OSGetSystemTime(); gfx_upload(&addr, phase != 2);
-				  g_blit_upload_ticks += OSGetSystemTime() - _t; g_blit_n_upload++; }
-				else gfx_upload(&addr, phase != 2);
-#else
 				(void)primary; gfx_upload(&addr, phase != 2);
-#endif
 				break;
 
 			case 0x1000:   /* draw: done in the draw pass(es) (phase!=1) */
 				addr -= 2;
-#ifdef CV1K_PROF
-				if (primary) { long long _t = OSGetSystemTime(); gfx_draw(&addr, clip, phase != 1);
-				  g_blit_draw_ticks += OSGetSystemTime() - _t; g_blit_n_draw++; }
-				else gfx_draw(&addr, clip, phase != 1);
-#else
 				gfx_draw(&addr, clip, phase != 1);
-#endif
 				break;
 
 			default:
@@ -1258,13 +1221,6 @@ static void epic12_draw_screen16_24bpp()
 
 void epic12_draw_screen(UINT8 &recalc_palette)
 {
-#ifdef CV1K_PROF
-	long long _cstart = OSGetSystemTime();
-	if (g_composite_core < 0) g_composite_core = (int)OSGetCoreId();
-#define COMPOSITE_DONE() do { g_composite_ticks += OSGetSystemTime() - _cstart; g_composite_frames++; } while (0)
-#else
-#define COMPOSITE_DONE() do { } while (0)
-#endif
 	INT32 scrollx = -m_gfx_scroll_x;
 	INT32 scrolly = -m_gfx_scroll_y;
 
@@ -1275,7 +1231,6 @@ void epic12_draw_screen(UINT8 &recalc_palette)
 		}
 
 		epic12_draw_screen16_24bpp();
-		COMPOSITE_DONE();
 		return;
 	}
 
@@ -1310,8 +1265,6 @@ void epic12_draw_screen(UINT8 &recalc_palette)
 			d0[x +15] = s0[((sx +15)) & widthmask];
 		}
 	}
-	COMPOSITE_DONE();
-#undef COMPOSITE_DONE
 }
 
 

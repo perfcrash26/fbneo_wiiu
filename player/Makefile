@@ -25,11 +25,13 @@ SDL_LIBS   := $(shell $(PKGCFG) --libs --static SDL2_ttf)
 
 wiiu: fbneo_player.rpx
 
-# package a Wii U menu app: FBNeo icon + Roboto font bundled in /content
+# package a Wii U menu app: FBNeo icon + Roboto font + license files bundled in /content
 wuhb: fbneo_player.rpx
+	rm -rf build_content && mkdir build_content && cp -r content/. build_content/
+	sh make-notices.sh build_content
 	wuhbtool fbneo_player.rpx fbneo_player.wuhb \
 	    --name "FBNeo Player" --short-name FBNeoPlay --author fbneo_wiiu \
-	    --icon=icon.png --content=content
+	    --icon=icon.png --content=build_content
 
 fbneo_player.elf: player.c picker/picker.c picker/picker.h fbneo_names.cpp $(CORE_A)
 	$(PPC_CC) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -D__WUT__ $(INCLUDES) $(SDL_CFLAGS) -isystem $(WUT_ROOT)/include -c player.c -o player_wiiu.o
@@ -44,3 +46,4 @@ fbneo_player.rpx: fbneo_player.elf
 
 clean:
 	rm -f player_wiiu.o picker_wiiu.o fbneo_names.o lrc_wiiu.a fbneo_player.elf fbneo_player.rpx fbneo_player.wuhb
+	rm -rf build_content release

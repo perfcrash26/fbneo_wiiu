@@ -58,6 +58,7 @@ static void ymz770_internal_reg_write(UINT8 reg, UINT8 data); // forward
 static void ymz774_internal_reg_write(UINT8 reg, UINT8 data);
 static void ymz770_sequencer();
 static void ymz774_sequencer();
+static void ymz_drain();   // Wii U: wait for the queued register writes (see ymz770_write)
 static void ymz770_stream_update(INT16 **streams, INT32 samples);
 
 static UINT32 ymz770_get_phrase_offs(int phrase) { return m_rom[(4 * phrase) + 1] << 16 | m_rom[(4 * phrase) + 2] << 8 | m_rom[(4 * phrase) + 3]; }
@@ -154,6 +155,7 @@ static void init_common()
 void ymz770_exit()
 {
 	if (ymz_initted) {
+		ymz_drain();   /* the worker must not touch the stream/decoders after they are freed */
 		ymz_initted = 0;
 		stream.exit();
 
@@ -227,6 +229,7 @@ void ymz774_init(UINT8 *rom, INT32 rom_length)
 
 void ymz770_reset()
 {
+	ymz_drain();
 	memset(&m_channels, 0, sizeof(m_channels));
 	for (int i = 0; i < 16; i++)
 	{
@@ -273,11 +276,13 @@ void ymz770_update(INT16 *output, INT32 samples_len)
 		return;
 	}
 
+	ymz_drain();
 	stream.render(output, samples_len);
 }
 
 void ymz770_scan(INT32 nAction, INT32 *pnMin)
 {
+	ymz_drain();
 	if (nAction & ACB_DRIVER_DATA) {
 		SCAN_VAR(m_cur_reg);
 		SCAN_VAR(m_mute);
@@ -447,7 +452,7 @@ static void ymz770_sequencer()
 //  write - write to the chip's registers
 //-------------------------------------------------
 
-void ymz770_write(INT32 offset, UINT8 data)
+static void ymz770_write_now(INT32 offset, UINT8 data)
 {
 	if (offset & 1)
 	{
@@ -458,6 +463,132 @@ void ymz770_write(INT32 offset, UINT8 data)
 		m_cur_reg = data;
 }
 
+#if defined(__wiiu__)
+/* ---- Wii U: YMZ770 rendering on core 0 (off when g_ymz_async = 0) ----
+ * Each data write first renders the stream up to the CPU's current time (stream.update) - on the emulation core,
+ * in the middle of the frame. Instead the write is queued with the position update() would have used, and a worker
+ * on core 0 replays the queue in order: render up to that position, then apply the write. The CPU never reads the
+ * chip, so the result is the same; ymz770_update/scan/reset wait for the queue to drain first. */
+/* coreinit prototypes written out by hand: the wut headers need C++11 and the core builds as gnu++98 (as thready.h) */
+extern "C" {
+typedef struct { UINT8 data[0x6a0]; } __attribute__((aligned(8))) YmzOSThread;
+typedef struct { UINT8 data[0x20]; } __attribute__((aligned(8))) YmzOSSemaphore;
+int OSCreateThread(YmzOSThread *thread, int (*entry)(int, const char **), INT32 argc, char *argv, void *stack, UINT32 stackSize, INT32 priority, UINT32 attributes);
+INT32 OSResumeThread(YmzOSThread *thread);
+void OSInitSemaphore(YmzOSSemaphore *semaphore, INT32 count);
+INT32 OSWaitSemaphore(YmzOSSemaphore *semaphore);
+INT32 OSSignalSemaphore(YmzOSSemaphore *semaphore);
+INT32 OSTryWaitSemaphore(YmzOSSemaphore *semaphore);
+INT64 OSGetSystemTime(void);
+}
+#include <malloc.h>
+#define YMZ_OS_TICKS_PER_SEC 62156250LL   /* OSGetSystemTime rate: bus clock / 4 */
+extern "C" { int g_ymz_async = 1; }
+struct ymz_q { INT32 pos; UINT8 off, data, snd, pad; };
+#define YMZ_QN 4096
+static ymz_q ymz_ring[YMZ_QN];
+static volatile UINT32 ymz_head, ymz_tail;          /* head: written by core 1, tail: by the worker */
+static volatile int ymz_sleeping, ymz_endreq;
+static YmzOSSemaphore ymz_wake, ymz_done;
+static YmzOSThread *ymz_thread;
+static int ymz_ready;
+
+static int ymz_worker(int, const char **)
+{
+	for (;;) {
+		while (ymz_tail != ymz_head) {
+			__sync_synchronize();
+			const ymz_q &q = ymz_ring[ymz_tail % YMZ_QN];
+			if (q.off & 1) {
+				if (q.snd) stream.update_pos(q.pos);
+				internal_reg_write(m_cur_reg, q.data);
+			} else
+				m_cur_reg = q.data;
+			__sync_synchronize();
+			ymz_tail = ymz_tail + 1;
+		}
+		if (ymz_endreq) { ymz_endreq = 0; __sync_synchronize(); OSSignalSemaphore(&ymz_done); continue; }
+		ymz_sleeping = 1;
+		__sync_synchronize();
+		if (ymz_tail != ymz_head || ymz_endreq) { ymz_sleeping = 0; continue; }
+		OSWaitSemaphore(&ymz_wake);
+		ymz_sleeping = 0;
+	}
+	return 0;
+}
+
+/* cheap wake for plain writes: a missed wake only delays the write to the next drain, which wakes unconditionally */
+static void ymz_kick()
+{
+	__sync_synchronize();
+	if (ymz_sleeping) { ymz_sleeping = 0; OSSignalSemaphore(&ymz_wake); }
+}
+
+/* wake that can't be lost: an extra count only costs one spurious loop in the worker */
+static void ymz_wake_now()
+{
+	__sync_synchronize();
+	ymz_sleeping = 0;
+	OSSignalSemaphore(&ymz_wake);
+}
+
+static int ymz_async_on()
+{
+	if (!g_ymz_async) return 0;
+	if (ymz_ready) return 1;
+	OSInitSemaphore(&ymz_wake, 0);
+	OSInitSemaphore(&ymz_done, 0);
+	unsigned char *stack = (unsigned char *)memalign(16, 64 * 1024);
+	ymz_thread = (YmzOSThread *)memalign(16, sizeof(YmzOSThread));
+	if (!stack || !ymz_thread ||
+	    !OSCreateThread(ymz_thread, ymz_worker, 0, NULL, stack + 64 * 1024, 64 * 1024, 18, (1 << 0)))   /* core 0, below the blit helper */
+		{ g_ymz_async = 0; return 0; }
+	OSResumeThread(ymz_thread);
+	ymz_ready = 1;
+	return 1;
+}
+
+/* wait until the worker has applied every queued write (core 1, at frame end / scan / reset) */
+static void ymz_drain()
+{
+	if (!ymz_ready || ymz_tail == ymz_head) return;
+	ymz_endreq = 1;
+	ymz_wake_now();
+	/* timed wait: every 2 s without an answer, warn and wake the worker again (recovers a lost wakeup) */
+	INT64 t0 = OSGetSystemTime(), tick = YMZ_OS_TICKS_PER_SEC * 2;
+	INT64 next = t0 + tick;
+	while (OSTryWaitSemaphore(&ymz_done) <= 0) {
+		INT64 t = OSGetSystemTime();
+		if (t >= next) {
+			bprintf(PRINT_IMPORTANT, _T("YMZSTUCK %d s head=%u tail=%u endreq=%d sleeping=%d\n"),
+			        (int)((t - t0) / YMZ_OS_TICKS_PER_SEC), (unsigned)ymz_head, (unsigned)ymz_tail, ymz_endreq, ymz_sleeping);
+			ymz_wake_now();
+			next = t + tick;
+		}
+	}
+	while (ymz_tail != ymz_head) { }   /* defensive: done is only signalled once drained */
+	__sync_synchronize();
+}
+
+void ymz770_write(INT32 offset, UINT8 data)
+{
+	if (!ymz_async_on()) { ymz770_write_now(offset, data); return; }
+	if (ymz_head - ymz_tail >= YMZ_QN) {   /* full: let the worker catch up */
+		ymz_wake_now();
+		while (ymz_head - ymz_tail >= YMZ_QN) { }
+	}
+	ymz_q &q = ymz_ring[ymz_head % YMZ_QN];
+	q.off = (UINT8)offset; q.data = data;
+	q.snd = (pBurnSoundOut != NULL);
+	q.pos = (offset & 1) ? stream.sync_position() : 0;
+	__sync_synchronize();
+	ymz_head = ymz_head + 1;
+	ymz_kick();
+}
+#else
+static void ymz_drain() { }
+void ymz770_write(INT32 offset, UINT8 data) { ymz770_write_now(offset, data); }
+#endif
 
 static void ymz770_internal_reg_write(UINT8 reg, UINT8 data)
 {

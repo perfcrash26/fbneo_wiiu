@@ -51,7 +51,11 @@ void OSSetThreadName(OSThread *thread, const char *name);
 void OSInitSemaphore(OSSemaphore *semaphore, INT32 count);
 INT32 OSWaitSemaphore(OSSemaphore *semaphore);
 INT32 OSSignalSemaphore(OSSemaphore *semaphore);
+long long OSGetSystemTime(void);
+unsigned OSGetCoreId(void);
+int OSAddAtomic(volatile int *ptr, int value);
 }
+#define OS_THREAD_ATTRIB_AFFINITY_CPU0 (1 << 0)
 #define OS_THREAD_ATTRIB_AFFINITY_CPU2 (1 << 2)
 #endif
 
@@ -656,7 +660,7 @@ static void *ThreadyProc(void*) {
 
 
 #if (THREADY == THREADY_WIIU)
-// the emulation runs on the main thread (core 1), so the worker gets core 2 to itself
+// the emulation runs on the main thread (core 1), the worker on core 2
 #define THREADY_WIIU_STACK (256 * 1024)
 static int ThreadyProc(int, const char **);
 

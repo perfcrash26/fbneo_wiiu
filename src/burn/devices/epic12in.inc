@@ -118,9 +118,9 @@ static const void FUNCNAME(BLIT_PARAMS)
 	for (y = starty; y < dimy; y++)
 	{
 		//bmp = &bitmap->pix(dst_y_start + y, dst_x_start+startx);
-		bmp = m_bitmaps + (dst_y_start + y) * 0x2000 + (dst_x_start+startx);
+		bmp = m_bitmaps + (dst_y_start + y) * EP1C_PITCH + (dst_x_start+startx);
 
-		const int ysrc_index =  ((src_y + yf * y) & 0x0fff) * 0x2000;
+		const int ysrc_index =  ((src_y + yf * y) & 0x0fff) * EP1C_PITCH;
 		gfx2 = gfx + ysrc_index;
 
 		#if FLIPX == 1

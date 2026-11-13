@@ -235,10 +235,7 @@ void Sh3SetTimerGranularity(INT32 timergransh)
 
 //-- timer jibbajabba --------------------+1
 // simple timer system -dink 2019, v2 (2022-upgreydde ver.)
-// Tier 1.5 (config "timerfast", default on): when a TMU channel is not running, run_prescale's
-// per-instruction subtraction loop has no side effects, so it collapses to one modulo - bit-exact,
-// removes the ~10% PROFPC hotspot when timers idle. timerfast=0 restores the exact original loop.
-extern "C" int g_sh3_timerfast = 1;
+#define SH3_USE_TIMERFAST 1
 struct sh4_dtimer
 {
 	INT32 running;
@@ -288,9 +285,8 @@ struct sh4_dtimer
 
 	void run_prescale(INT32 cyc) {
 		prescale_counter += cyc * m_ratio;
-		if (g_sh3_timerfast && !running) {
-			// not running: the loop body below is a no-op except the subtraction, so this is
-			// exactly what it would compute, without spinning (PROFPC: ~10% of mushisam here).
+		if (SH3_USE_TIMERFAST && !running) {
+			// stopped timer: the loop below only subtracts, so one modulo gives the same result
 			if (prescale_counter >= timer_prescaler)
 				prescale_counter %= timer_prescaler;
 			return;
@@ -838,8 +834,12 @@ cpu_core_config sh3Config =
 	0
 };
 
+static void sh3_build_optable(void);	// sh4_optable.inc
+
 void Sh3Init(INT32 num, INT32 hz, char md0, char md1, char md2, char md3, char md4, char md5, char md6, char md7, char md8 )
 {
+	sh3_build_optable();
+
 	if (num != 0) {
 		bprintf(0, _T("--- Sh3Init(): only supports single cpu.\n"));
 		return;
@@ -4632,47 +4632,10 @@ static inline void execute_one(const UINT16 opcode)
 	}
 }
 
-// Tier 1: SH-3 dispatch function-pointer table (generated from execute_one above), always compiled.
-// g_sh3_optable (config option "optable", DEFAULT ON) picks the flat table (one indirect call) over
-// the original two-level switch at runtime; the frontend can set it to 0 to fall back to the exact
-// baseline interpreter. The toggle is a single perfectly-predicted branch per instruction (~free).
+// Flat opcode -> handler table, a mechanical mirror of execute_one's switches (one indirect call).
 #include "sh4_optable.inc"
-extern "C" int g_sh3_optable = 1;
 
-// Guest execution histogram (config option "ophist", default off): counts executions per opcode,
-// aggregated by handler at dump. Counts are GUEST-deterministic, so a hotspot found in Cemu is the
-// same on hardware - the right "what to optimize / JIT next" signal. One predicted-not-taken branch
-// per instruction when off.
-extern "C" int g_sh3_ophist = 0;
-static UINT32 sh3_op_hist[0x10000];
-extern "C" void Sh3OphistReset(void) { memset(sh3_op_hist, 0, sizeof(sh3_op_hist)); }
-// Aggregate by handler pointer and fill the top maxn (count desc). Returns total executions.
-// ptrs[] get the (relocated) handler addresses - symbolize offline to names.
-extern "C" unsigned long long Sh3OphistTop(unsigned int *ptrs, unsigned int *counts, int maxn)
-{
-	static unsigned int hp[1024]; static unsigned long long hc[1024]; int nh = 0;
-	unsigned long long total = 0;
-	for (int op = 0; op < 0x10000; op++) {
-		UINT32 c = sh3_op_hist[op];
-		if (!c) continue;
-		total += c;
-		unsigned int p = (unsigned int)(uintptr_t)sh3_optable[op];
-		int j = 0;
-		for (; j < nh; j++) if (hp[j] == p) break;
-		if (j == nh) { if (nh >= 1024) continue; hp[nh] = p; hc[nh] = 0; nh++; }
-		hc[j] += c;
-	}
-	for (int k = 0; k < maxn; k++) {
-		int best = -1; unsigned long long bc = 0;
-		for (int j = 0; j < nh; j++) if (hc[j] > bc) { bc = hc[j]; best = j; }
-		ptrs[k] = (best < 0) ? 0 : hp[best];
-		counts[k] = (best < 0) ? 0 : (unsigned int)(hc[best] > 0xffffffffULL ? 0xffffffffU : hc[best]);
-		if (best >= 0) hc[best] = 0;
-	}
-	return total;
-}
-
-#define EXEC_ONE(op) do { if (g_sh3_ophist) sh3_op_hist[op]++; if (g_sh3_optable) sh3_optable[op](op); else execute_one(op); } while (0)
+#define EXEC_ONE(op) sh3_optable[op](op)
 
 	static inline void sh4_check_pending_irq(/*const char *message*/) // look for highest priority active exception and handle it
 	{
@@ -4798,7 +4761,6 @@ static int Sh3Run_normal(int cycles)
 
 int Sh3Run(int cycles)
 {
-	if (!sh3_optable_built) sh3_build_optable();
 	return (timer_granularity == 0) ? Sh3Run_normal(cycles) : Sh3Run_timerhack(cycles);
 }
 

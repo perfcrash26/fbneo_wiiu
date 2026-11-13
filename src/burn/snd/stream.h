@@ -359,6 +359,26 @@ struct Stream {
 		UpdateStream(0);
 	}
 
+	// the position update() would render up to right now (for a deferred update_pos())
+	INT32 sync_position()
+	{
+		INT32 framelen = samples_to_source(nBurnSoundLen);
+		INT32 position = SyncInternal(framelen);
+		return (position > framelen) ? framelen : position;
+	}
+
+	// same as update(), with the position taken earlier by sync_position()
+	void update_pos(INT32 position)
+	{
+		if (buffered == 0) return;   // (pBurnSoundOut was checked when the position was taken)
+		INT32 samples = position - nPosition;
+		if (samples < 1) return;
+		INT16 *mix[MAX_CHANNELS];
+		for (INT32 i = 0; i < nChannels; i++) mix[i] = soundbuf[i] + 1 + nPosition;
+		pUpdateStream(mix, samples);
+		nPosition += samples;
+	}
+
 	void set_debug(INT32 level)
 	{
 		debug = level;

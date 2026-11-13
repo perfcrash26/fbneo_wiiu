@@ -287,8 +287,8 @@ static UINT32 process_byte( UINT8 real_byte, UINT32 destination, INT32 max_lengt
 	destination &= 0x7fffff;
 
 	if (real_byte&0x40) {
-		INT32 cps3_rle_length = (real_byte&0x3f)+1;
 #if CPS3_FAST_CHARDMA
+		INT32 cps3_rle_length = (real_byte&0x3f)+1;
 		// RLE run: write one value to [destination, destination+k). BE_GFX_CRAM==0 so each
 		// byte goes to dest[addr^3]; that swizzle stays inside a 32-bit word, so whole aligned
 		// words are a plain memset and only the partial head/tail keep the ^3. Same bytes, same
@@ -306,16 +306,24 @@ static UINT32 process_byte( UINT8 real_byte, UINT32 destination, INT32 max_lengt
 		return over ? (max_length - avail) : cps3_rle_length;
 #else
 		INT32 tranfercount = 0;
+		//printf("Set RLE Mode\n");
+		INT32 cps3_rle_length = (real_byte&0x3f)+1;
+		//printf("RLE Operation (length %08x\n", cps3_rle_length );
 		while (cps3_rle_length) {
 #if BE_GFX_CRAM
 			dest[((destination+tranfercount)&0x7fffff)] = (last_normal_byte&0x3f);
 #else
 			dest[((destination+tranfercount)&0x7fffff)^3] = (last_normal_byte&0x3f);
 #endif
+			//cps3_char_ram_dirty[((destination+tranfercount)&0x7fffff)/0x100] = 1;
+			//cps3_char_ram_is_dirty = 1;
+			//printf("RLE WRite Byte %08x, %02x\n", destination+tranfercount, real_byte);
+
 			tranfercount++;
 			cps3_rle_length--;
 			max_length--;
 			if ((destination+tranfercount) > 0x7fffff)  return max_length;
+	//      if (max_length==0) return max_length; // this is meant to abort the transfer if we exceed dest length,, not working
 		}
 		return tranfercount;
 #endif

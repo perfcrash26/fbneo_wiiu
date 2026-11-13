@@ -13,6 +13,14 @@ Redistributions may not be sold, nor may they be used in a commercial product or
 #include "rectangle.h"
 #include <math.h> // floor()
 
+/* VRAM row stride in pixels — the emulator's own layout, not the hardware's. A power-of-two stride (0x2000,
+ * 32 KB rows) makes every sprite row map to the same cache sets on the Wii U; padding each row by 1 KB (8448)
+ * avoids that. Only addressing changes: video, audio and savestates are bit-identical.
+ * -DEP1C_PITCH overrides it for A/B builds. */
+#ifndef EP1C_PITCH
+#define EP1C_PITCH 8448
+#endif
+
 static const int EP1C_VRAM_CLK_NANOSEC = 13;
 static const int EP1C_SRAM_CLK_NANOSEC = 20;
 static const int EP1C_VRAM_H_LINE_PERIOD_NANOSEC = 63600;
@@ -297,34 +305,59 @@ static void blitter_delay_callback(int)
 	//bprintf(0, _T("cyc @ blitdelay callback: %d\n"), Sh3TotalCycles());
 }
 
-static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int phase); // forward
+enum { BAND_ALL = 0, BAND_UPLOADS = 1, BAND_DRAWS = 2 };   // gfx_exec_band phase
+static void gfx_exec_band(rectangle *clip, int ylo, int yhi, int phase,
+                          UINT32 a0 = 0, UINT32 a1 = 0, int ct = 1); // forward (a0 = 0: list start; a1 = 0: list end)
 
-/* ---- experimental core0+core2 blitter split (runtime flag g_blit_split, config "blitsplit") ----
- * Profiling showed CV1000 gameplay is epic12-blitter-bound: the blitter thread (core2) saturates
- * while core0 sits idle. The blit is ~99% draw-pixels, ~1 upload/frame. So split the 240-tall
- * display into two Y-bands - core2 (this thread) draws the top, a persistent core0 helper draws the
- * bottom - each walking the full list clipped to its band. Measure the win via CV1KUTIL + frame_ms. */
-#ifndef OS_THREAD_ATTRIB_AFFINITY_CPU0
-#define OS_THREAD_ATTRIB_AFFINITY_CPU0 (1 << 0)
+extern "C" { int g_blit_split = 1; }    // runtime switch: split the blit across core 2 and core 0
+extern "C" { int g_comp_split = 1; }    // runtime switch: 32-bit composite on the blit cores
+
+#if (THREADY == THREADY_WIIU)
+#define EP1C_SPLIT 1
+#else
+#define EP1C_SPLIT 0
 #endif
-extern "C" long long OSGetSystemTime(void);   // for the adaptive-balance timing (redecl ok)
-extern "C" { int g_blit_split = 1; }    // 1 = split across core0+core2 (bench config blitsplit=0 to A/B)
-extern "C" { int g_blit_mid = 120; }    // split row within the 240-tall display; <120 gives core0 more
-                                         // work (core2 also carries uploads+sync).
+
+#if EP1C_SPLIT
+/* ---- blitter split: the 240-tall display is cut into two Y-bands; the blitter thread (core 2) draws the top,
+ * a core 0 helper the bottom, each walking the list clipped to its band. Uploads run first, on one core. ---- */
+static int g_blit_mid = 120;   // split row within the display
+#define BLIT_ADAPTIVE 1
+#define BLIT_SAFE     1
+#define SS_SEGS       8
+#define BLIT0_STACK (64 * 1024)
 static OSThread  *blit0_thread;
+static UINT8      *blit0_stack;
 static OSSemaphore blit0_start, blit0_done;
 static rectangle  blit0_clip;
 static int         blit0_ylo, blit0_yhi;
-static volatile int blit0_ready;
+static UINT32      blit0_a0, blit0_a1;   // list segment for the helper (0 = whole list)
+static int         blit0_ct = 1;         // clip type at the segment start
+static volatile int blit0_ready, blit0_quit;
+static int         blit0_failed;         // thread creation failed: stay on one core until the next init
 static volatile long long blit0_ticks;   // time core0 spent on its band (for adaptive balance)
+/* Split safety: a frame whose list has a cross-band dependency (one band reads VRAM the other band writes, or an
+ * upload lands on VRAM an earlier draw used, which the uploads pre-pass would reorder) is cut into segments with a
+ * sync point between them, or runs on one core. */
+static volatile int last_split_mid = -1;   /* VRAM split row of the last blit, -1 = it ran on one core */
+static bool split_safe(int mid);   // defined after READ_NEXT_WORD
+/* plan from split_safe: ss_nseg list segments starting at ss_seg_addr[i] with clip type ss_seg_ct[i];
+ * ss_tail_addr != 0: from there on, one core draws all rows */
+#define SS_MAXSEG 64   /* array size; the cap in use is SS_SEGS */
+static UINT32 ss_seg_addr[SS_MAXSEG];
+static int ss_seg_ct[SS_MAXSEG], ss_nseg = 1;
+static UINT32 ss_tail_addr;
+static int ss_tail_ct;
 
 static int blit0_main(int, const char **)
 {
 	for (;;) {
 		OSWaitSemaphore(&blit0_start);                           // parent set band + signalled
+		if (blit0_quit) return 0;
 		long long t = OSGetSystemTime();
-		gfx_exec_band(&blit0_clip, blit0_ylo, blit0_yhi, false, 2); // bottom band, draws only
-		blit0_ticks = OSGetSystemTime() - t;
+		gfx_exec_band(&blit0_clip, blit0_ylo, blit0_yhi, BAND_DRAWS, blit0_a0, blit0_a1, blit0_ct); // bottom band
+		long long t1 = OSGetSystemTime();
+		blit0_ticks = t1 - t;
 		OSSignalSemaphore(&blit0_done);
 	}
 	return 0;
@@ -332,54 +365,108 @@ static int blit0_main(int, const char **)
 
 static void blit_split_init()
 {
-	if (blit0_ready) return;
+	if (blit0_ready || blit0_failed) return;
 	OSInitSemaphore(&blit0_start, 0);
 	OSInitSemaphore(&blit0_done, 0);
-	unsigned char *stack = (unsigned char *)memalign(16, 64 * 1024);
+	blit0_quit = 0;
+	blit0_stack = (UINT8 *)memalign(16, BLIT0_STACK);
 	blit0_thread = (OSThread *)memalign(16, sizeof(OSThread));
-	if (stack && blit0_thread &&
-	    OSCreateThread(blit0_thread, blit0_main, 0, NULL, stack + 64 * 1024, 64 * 1024, 16,
+	if (blit0_stack && blit0_thread &&
+	    OSCreateThread(blit0_thread, blit0_main, 0, NULL, blit0_stack + BLIT0_STACK, BLIT0_STACK, 16,
 	                   OS_THREAD_ATTRIB_AFFINITY_CPU0)) {
 		OSResumeThread(blit0_thread);
 		blit0_ready = 1;
+	} else {
+		free(blit0_thread);
+		free(blit0_stack);
+		blit0_thread = NULL;
+		blit0_stack = NULL;
+		blit0_failed = 1;
 	}
 }
+
+static void blit_split_exit()   // the blitter thread is stopped first, so the helper is idle
+{
+	if (blit0_ready) {
+		blit0_quit = 1;
+		OSSignalSemaphore(&blit0_start);
+		OSJoinThread(blit0_thread, NULL);
+		free(blit0_thread);
+		free(blit0_stack);
+		blit0_thread = NULL;
+		blit0_stack = NULL;
+		blit0_ready = 0;
+	}
+	blit0_failed = 0;
+	last_split_mid = -1;
+}
+#endif // EP1C_SPLIT
 
 static void run_blitter_cb()
 {
 	epic12_device_blit_delay = 0;
-	if (g_blit_split && blit0_ready) {
-		/* uploads pre-pass, single-threaded: all textures land in m_bitmaps BEFORE either core
-		 * reads them, so the parallel draws never race an in-flight upload (the map-selector bug). */
+#if EP1C_SPLIT
+	bool split = g_blit_split && blit0_ready;
+	if (split && BLIT_SAFE) {
+		split = split_safe(m_gfx_clip_y_shadowcopy + g_blit_mid);
+	}
+	last_split_mid = -1;
+	if (split) {
+		/* uploads first, on this core, so the parallel draws never race an in-flight upload */
 		rectangle upclip;
-		gfx_exec_band(&upclip, 0, 0x1000 - 1, true, 1);  // uploads only
+		gfx_exec_band(&upclip, 0, 0x1000 - 1, BAND_UPLOADS);
 
 		const int mid = m_gfx_clip_y_shadowcopy + g_blit_mid;   // split row
-		blit0_ylo = mid; blit0_yhi = 0x1000 - 1;         // bottom band -> core0 (draws only)
-		OSSignalSemaphore(&blit0_start);
+		last_split_mid = mid;
+		/* list segments from the safety check: both cores draw segment i (each its band), meet, then segment i+1;
+		 * a tail (if any) runs on this core alone. Without a check: one segment = the whole list. */
+		const int nseg = BLIT_SAFE == 1 ? ss_nseg : 1;
 		rectangle topclip;
-		long long t = OSGetSystemTime();
-		gfx_exec_band(&topclip, 0, mid - 1, true, 2);    // top band -> this thread (draws only)
-		long long top = OSGetSystemTime() - t;
-		OSWaitSemaphore(&blit0_done);
-		/* Adaptive load balance: nudge the split line so core2 (top, which also carries uploads+sync)
-		 * and core0 (bottom) take equal time, whatever the sprite distribution. Keeps the win on
-		 * top-heavy menus as well as spread-out gameplay. ~6% deadband; small step for stability. */
-		long long bot = blit0_ticks, sum = top + bot;
-		if (sum > 0) {
+		long long top = 0, bot = 0;
+		for (int i = 0; i < nseg; i++) {
+			const UINT32 a0 = nseg > 1 || BLIT_SAFE == 1 ? ss_seg_addr[i] : 0;
+			const UINT32 a1 = (i + 1 < nseg) ? ss_seg_addr[i + 1] : (BLIT_SAFE == 1 ? ss_tail_addr : 0);
+			const int ct = BLIT_SAFE == 1 ? ss_seg_ct[i] : 1;
+			blit0_ylo = mid; blit0_yhi = 0x1000 - 1;     // bottom band -> core0
+			blit0_a0 = a0; blit0_a1 = a1; blit0_ct = ct;
+			OSSignalSemaphore(&blit0_start);
+			long long t = OSGetSystemTime();
+			gfx_exec_band(&topclip, 0, mid - 1, BAND_DRAWS, a0, a1, ct);   // top band -> this thread
+			top += OSGetSystemTime() - t;
+			OSWaitSemaphore(&blit0_done);
+			bot += blit0_ticks;
+		}
+		if (BLIT_SAFE == 1 && ss_tail_addr) {   // too many sync points: the rest on one core, all rows
+			long long t = OSGetSystemTime();
+			gfx_exec_band(&topclip, 0, 0x1000 - 1, BAND_DRAWS, ss_tail_addr, 0, ss_tail_ct);
+			top += OSGetSystemTime() - t;
+		}
+		/* load balance: move the split row so both bands take about the same time (1/16 deadband) */
+		long long sum = top + bot;
+		if (sum > 0 && BLIT_ADAPTIVE) {
 			long long thresh = sum / 16;
 			if (top - bot > thresh && g_blit_mid > 48)  g_blit_mid -= 3;  // top slower -> shrink top
 			else if (bot - top > thresh && g_blit_mid < 200) g_blit_mid += 3;  // bottom slower -> grow top
 		}
-	} else {
+	} else
+#endif // EP1C_SPLIT
+	{
 		rectangle clip;
-		gfx_exec_band(&clip, 0, 0x1000 - 1, true, 0);    // single-threaded, full screen, all ops
+		gfx_exec_band(&clip, 0, 0x1000 - 1, BAND_ALL);    // one core, all rows, all ops
 	}
 }
+
+#if EP1C_SPLIT
+static void comp_exit();
+#endif
 
 void epic12_exit()
 {
 	thready.exit();
+#if EP1C_SPLIT
+	blit_split_exit();
+	comp_exit();
+#endif
 
 	BurnFree(m_bitmaps);
 	BurnFree(m_ram16_copy);
@@ -402,7 +489,7 @@ void epic12_init(INT32 ram_size, UINT16 *ram, UINT8 *dippy)
 	dips = dippy;
 
 	m_gfx_size = 0x2000 * 0x1000;
-	m_bitmaps = (UINT32*)BurnMalloc (m_gfx_size * 4);
+	m_bitmaps = (UINT32*)BurnMalloc ((size_t)EP1C_PITCH * 0x1000 * 4);
 
 	m_clip.set(0, 0x2000-1, 0, 0x1000-1);
 
@@ -426,7 +513,9 @@ void epic12_init(INT32 ram_size, UINT16 *ram, UINT8 *dippy)
 	epic12_set_blitter_sleep_on_busy(1);
 
 	thready.init(run_blitter_cb);
-	blit_split_init();   // bring up the core0 blitter helper (used when g_blit_split)
+#if EP1C_SPLIT
+	blit_split_init();
+#endif
 
 	sh4_set_cave_blitter_delay_func(blitter_delay_callback);
 }
@@ -508,6 +597,212 @@ static inline UINT16 READ_NEXT_WORD(UINT32 *addr)
 	return data;
 }
 
+#if EP1C_SPLIT
+/* ---- split safety check (see run_blitter_cb) ----
+ * One walk of the list, no drawing. VRAM is tracked in 32x32-pixel cells: per band, the cells it has written and
+ * the cells it has read so far. Cells are coarser than pixels, so the check can only err towards falling back. */
+#define SS_CW 256   /* 0x2000 / 32 */
+#define SS_CH 128   /* 0x1000 / 32 */
+static UINT32 ss_map[4][SS_CH][SS_CW / 32];   /* [0]=written band0, [1]=written band1, [2]=read band0, [3]=read band1 */
+
+static inline void ss_clamp(int &x0, int &x1, int &y0, int &y1)
+{
+	if (x0 < 0 || x1 > 0x1fff) { x0 = 0; x1 = 0x1fff; y0--; y1++; }   /* off the row ends: whole rows, +-1 row */
+	if (y0 < 0) y0 = 0;
+	if (y1 > 0xfff) y1 = 0xfff;
+}
+
+/* mark (set=true) or test the cell rectangle of a pixel rect in map m */
+static bool ss_cells(int m, int x0, int x1, int y0, int y1, bool set)
+{
+	ss_clamp(x0, x1, y0, y1);
+	if (x0 > x1 || y0 > y1) return false;
+	const int c0 = x0 >> 5, c1 = x1 >> 5;
+	for (int r = y0 >> 5; r <= (y1 >> 5); r++) {
+		UINT32 *row = ss_map[m][r];
+		for (int w = c0 >> 5; w <= (c1 >> 5); w++) {
+			const int lo = (w == (c0 >> 5)) ? (c0 & 31) : 0, hi = (w == (c1 >> 5)) ? (c1 & 31) : 31;
+			const UINT32 mask = (hi == 31 ? 0xffffffffu : ((1u << (hi + 1)) - 1)) & ~((1u << lo) - 1);
+			if (set) row[w] |= mask;
+			else if (row[w] & mask) return true;
+		}
+	}
+	return false;
+}
+
+/* exact confirmation: rectangle lists next to the cell maps. A cell hit is a conflict only if a rectangle overlaps too
+ * (cells alone give many false conflicts). A full list falls back to the cell answer. */
+struct ss_rect { int x0, x1, y0, y1; };
+#define SS_RCAP 2048
+static ss_rect ss_r[4][SS_RCAP];   /* same indexing as ss_map */
+static int ss_n[4];
+static UINT8 ss_over[4];
+static UINT32 ss_all[SS_CH][SS_CW / 32];   /* every cell any draw read or wrote this list (never reset): upload check */
+static bool ss_rhit(int m, int x0, int x1, int y0, int y1)
+{
+	if (ss_over[m]) return true;
+	for (int i = 0; i < ss_n[m]; i++) {
+		const ss_rect &r = ss_r[m][i];
+		if (r.x0 <= x1 && x0 <= r.x1 && r.y0 <= y1 && y0 <= r.y1) return true;
+	}
+	return false;
+}
+static void ss_radd(int m, int x0, int x1, int y0, int y1)
+{
+	if (ss_n[m] >= SS_RCAP) { ss_over[m] = 1; return; }
+	ss_rect r = { x0, x1, y0, y1 }; ss_r[m][ss_n[m]++] = r;
+}
+/* the 0xfff source-row wrap, for both structures: calls fn on one or two row ranges */
+#define SS_ROWS(y0, y1, CALL) do { int _a = (y0), _b = (y1); \
+	if (_b - _a >= 0xfff) { _a = 0; _b = 0xfff; } else { _a &= 0xfff; _b &= 0xfff; } \
+	if (_a <= _b) { CALL(_a, _b); } else { CALL(_a, 0xfff); CALL(0, _b); } } while (0)
+
+static bool ss_hit_rect(int m, int x0, int x1, int y0, int y1)   /* cells first, rects to confirm */
+{
+	return ss_cells(m, x0, x1, y0, y1, false) && ss_rhit(m, x0, x1, y0, y1);
+}
+static void ss_mark(int m, int x0, int x1, int y0, int y1)
+{
+	ss_cells(m, x0, x1, y0, y1, true);
+	ss_radd(m, x0, x1, y0, y1);
+}
+static void ss_reset()
+{
+	memset(ss_map, 0, sizeof(ss_map));
+	ss_n[0] = ss_n[1] = ss_n[2] = ss_n[3] = 0;
+	ss_over[0] = ss_over[1] = ss_over[2] = ss_over[3] = 0;
+}
+static void ss_all_mark(int x0, int x1, int y0, int y1)
+{
+	ss_clamp(x0, x1, y0, y1);
+	if (x0 > x1 || y0 > y1) return;
+	for (int r = y0 >> 5; r <= (y1 >> 5); r++)
+		for (int c = x0 >> 5; c <= (x1 >> 5); c++) ss_all[r][c >> 5] |= 1u << (c & 31);
+}
+static bool ss_all_hit(int x0, int x1, int y0, int y1)
+{
+	ss_clamp(x0, x1, y0, y1);
+	if (x0 > x1 || y0 > y1) return false;
+	for (int r = y0 >> 5; r <= (y1 >> 5); r++)
+		for (int c = x0 >> 5; c <= (x1 >> 5); c++) if (ss_all[r][c >> 5] & (1u << (c & 31))) return true;
+	return false;
+}
+
+/* Returns false = run the whole frame on one core. A cross-band conflict at a draw becomes a sync point (segment
+ * boundary, maps reset: everything before it is finished on both cores); after SS_SEGS segments the rest of the list
+ * becomes a single-core tail. (BLIT_SAFE == 2, prof builds only: any conflict = whole frame on one core.) */
+static bool split_safe(int mid)
+{
+	const bool seg = BLIT_SAFE == 1;
+	UINT32 addr = m_gfx_addr_shadowcopy & 0x1fffffff;
+	const int cx0 = m_gfx_clip_x_shadowcopy - EP1C_CLIP_MARGIN, cx1 = m_gfx_clip_x_shadowcopy + 320 - 1 + EP1C_CLIP_MARGIN;
+	const int cy0 = m_gfx_clip_y_shadowcopy - EP1C_CLIP_MARGIN, cy1 = m_gfx_clip_y_shadowcopy + 240 - 1 + EP1C_CLIP_MARGIN;
+	int k0 = cx0, k1 = cx1, l0 = cy0, l1 = cy1, ct = 1;   /* current clip, as gfx_exec_band sets it */
+	bool tail = false;                                    /* past the tail start: only the upload check continues */
+	ss_reset();
+	memset(ss_all, 0, sizeof(ss_all));
+	ss_nseg = 1; ss_seg_addr[0] = addr; ss_seg_ct[0] = 1; ss_tail_addr = 0;
+	for (;;) {
+		const UINT32 opaddr = addr;
+		const UINT16 data = READ_NEXT_WORD(&addr);
+		switch (data & 0xf000) {
+		case 0x0000: case 0xf000:
+			return true;
+		case 0xc000:
+			ct = READ_NEXT_WORD(&addr) ? 1 : 0;
+			if (ct) { k0 = cx0; k1 = cx1; l0 = cy0; l1 = cy1; }
+			else { k0 = 0; k1 = 0x2000 - 1; l0 = 0; l1 = 0x1000 - 1; }
+			break;
+		case 0x2000: {
+			READ_NEXT_WORD(&addr); READ_NEXT_WORD(&addr); READ_NEXT_WORD(&addr);
+			const int ux = READ_NEXT_WORD(&addr) & 0x1fff, uy = READ_NEXT_WORD(&addr) & 0x0fff;
+			const int uw = (READ_NEXT_WORD(&addr) & 0x1fff) + 1, uh = (READ_NEXT_WORD(&addr) & 0x0fff) + 1;
+			addr += (UINT32)uw * uh * 2;
+			/* the uploads pre-pass moves this ahead of every draw: it must not touch anything a draw used */
+			int x0 = ux, x1 = ux + uw - 1;
+			if (x1 > 0x1fff) { x0 = 0; x1 = 0x1fff; }   /* wraps: whole rows */
+			bool hit = false;
+#define SS_UPCHK(a, b) hit = hit || ss_all_hit(x0, x1, a, b)
+			SS_ROWS(uy, uy + uh - 1, SS_UPCHK);
+#undef SS_UPCHK
+			if (hit) {
+				return false;
+			}
+			break;
+		}
+		case 0x1000: {
+			const UINT16 attr = data;
+			READ_NEXT_WORD(&addr);   /* alpha */
+			const int sx = READ_NEXT_WORD(&addr) & 0x1fff, sy = READ_NEXT_WORD(&addr) & 0x0fff;
+			const UINT16 dxw = READ_NEXT_WORD(&addr), dyw = READ_NEXT_WORD(&addr);
+			const int w = (READ_NEXT_WORD(&addr) & 0x1fff) + 1, h = (READ_NEXT_WORD(&addr) & 0x0fff) + 1;
+			READ_NEXT_WORD(&addr); READ_NEXT_WORD(&addr);   /* tint */
+			const int x = (dxw & 0x7fff) - (dxw & 0x8000), y = (dyw & 0x7fff) - (dyw & 0x8000);
+			const int flipy = attr & 0x0400, flipx = attr & 0x0800;
+			const int dx0 = x > k0 ? x : k0;
+			const int dx1 = (x + w - 1) < k1 ? (x + w - 1) : k1;
+			if (dx0 > dx1) break;
+			if (sx + w - 1 > 0x1fff) break;   /* the blitter skips draws whose source wraps in x */
+			/* source columns actually read for the clipped destination columns */
+			const int sc0 = flipx ? sx + (w - 1) - (dx1 - x) : sx + (dx0 - x);
+			const int sc1 = flipx ? sx + (w - 1) - (dx0 - x) : sx + (dx1 - x);
+			int pr[2][4]; bool part[2];
+			for (int b = 0; b < 2; b++) {   /* each band's part: clipped dest rows r0..r1, source rows s0..s1 */
+				int r0 = y > l0 ? y : l0, r1 = (y + h - 1) < l1 ? (y + h - 1) : l1;
+				if (b) { if (r0 < mid) r0 = mid; } else if (r1 > mid - 1) r1 = mid - 1;
+				part[b] = r0 <= r1;
+				pr[b][0] = r0; pr[b][1] = r1;
+				pr[b][2] = flipy ? sy + (h - 1) - (r1 - y) : sy + (r0 - y);
+				pr[b][3] = flipy ? sy + (h - 1) - (r0 - y) : sy + (r1 - y);
+			}
+			if (!tail) {
+				int why = -1;
+				for (int b = 0; b < 2 && why < 0; b++) {
+					if (!part[b]) continue;
+					bool rd = false;
+#define SS_RDCHK(a, c) rd = rd || ss_hit_rect(1 - b, sc0, sc1, a, c)
+					SS_ROWS(pr[b][2], pr[b][3], SS_RDCHK);
+#undef SS_RDCHK
+					if (rd) why = 0;   /* reads the other band's output */
+					else {
+						int ex0 = dx0, ex1 = dx1, ey0 = pr[b][0], ey1 = pr[b][1];
+						ss_clamp(ex0, ex1, ey0, ey1);
+						if (ss_hit_rect(3 - b, ex0, ex1, ey0, ey1)) why = 1;   /* overwrites the other band's input */
+					}
+				}
+				if (why >= 0) {
+					if (!seg) return false;
+					/* sync point before this draw: everything earlier is finished on both cores */
+					ss_reset();
+					if (ss_nseg < (SS_SEGS < SS_MAXSEG ? SS_SEGS : SS_MAXSEG)) { ss_seg_addr[ss_nseg] = opaddr; ss_seg_ct[ss_nseg] = ct; ss_nseg++; }
+					else { tail = true; ss_tail_addr = opaddr; ss_tail_ct = ct; }
+				}
+				if (!tail) for (int b = 0; b < 2; b++) {
+					if (!part[b]) continue;
+					int ex0 = dx0, ex1 = dx1, ey0 = pr[b][0], ey1 = pr[b][1];
+					ss_clamp(ex0, ex1, ey0, ey1);
+					ss_mark(b, ex0, ex1, ey0, ey1);
+#define SS_RDMARK(a, c) ss_mark(2 + b, sc0, sc1, a, c)
+					SS_ROWS(pr[b][2], pr[b][3], SS_RDMARK);
+#undef SS_RDMARK
+				}
+			}
+			for (int b = 0; b < 2; b++) {   /* union map for the upload check */
+				if (!part[b]) continue;
+				ss_all_mark(dx0, dx1, pr[b][0], pr[b][1]);
+#define SS_ALLMARK(a, c) ss_all_mark(sc0, sc1, a, c)
+				SS_ROWS(pr[b][2], pr[b][3], SS_ALLMARK);
+#undef SS_ALLMARK
+			}
+			break;
+		}
+		default:
+			return true;
+		}
+	}
+}
+#endif // EP1C_SPLIT
+
 static inline UINT16 COPY_NEXT_WORD(UINT32 *addr)
 {
 	const UINT16 data = m_ram16[((*addr & m_main_rammask) >> 1)];
@@ -574,8 +869,7 @@ static void gfx_upload(UINT32 *addr, bool do_upload)
 	dimx = (READ_NEXT_WORD(addr) & 0x1fff) + 1;
 	dimy = (READ_NEXT_WORD(addr) & 0x0fff) + 1;
 
-	/* draw-only pass of the split: skip the texel data (already uploaded in the pre-pass), just
-	 * advance the list pointer past it (READ_NEXT_WORD steps 2 bytes per word). */
+	/* draws-only pass: skip the texel data (READ_NEXT_WORD steps 2 bytes per word) */
 	if (!do_upload) { *addr += (UINT32)dimx * dimy * 2; return; }
 
 	//bprintf(0, _T("GFX COPY: DST %02X,%02X,%03X DIM %02X,%03X\n"), dst_p,dst_x_start,dst_y_start, dimx,dimy);
@@ -583,7 +877,7 @@ static void gfx_upload(UINT32 *addr, bool do_upload)
 	for (y = 0; y < dimy; y++)
 	{
 		//dst = &m_bitmaps->pix(dst_y_start + y, 0);
-		dst = m_bitmaps + (dst_y_start + y) * 0x2000;
+		dst = m_bitmaps + (dst_y_start + y) * EP1C_PITCH;
 
 		dst += dst_x_start;
 
@@ -818,7 +1112,7 @@ static void gfx_draw(UINT32 *addr, const rectangle *clip, bool do_draw)
 	UINT16 tint_r   =   READ_NEXT_WORD(addr);
 	UINT16 tint_gb  =   READ_NEXT_WORD(addr);
 
-	if (!do_draw) return;   /* upload-only pass: list pointer now advanced past this draw, do nothing */
+	if (!do_draw) return;   /* uploads-only pass: just step past this draw */
 
 	// 0: +alpha
 	// 1: +source
@@ -851,7 +1145,6 @@ static void gfx_draw(UINT32 *addr, const rectangle *clip, bool do_draw)
 
 	dimx    =   (w & 0x1fff) + 1;
 	dimy    =   (h & 0x0fff) + 1;
-
 
 	// convert parameters to clr
 
@@ -1060,22 +1353,21 @@ static void gfx_create_shadow_copy()
 }
 
 
-/* One band's worth of the blit: walk the whole list, but clip every draw to [ylo,yhi] in Y
- * (intersected with the game's clip). Two of these on two cores = a scanline split. Uploads run
- * on every band (there's ~1/frame and it's idempotent) so each band's sequential walk has its
- * textures. */
-/* phase: 0 = all ops (single-thread fallback), 1 = uploads only (pre-pass), 2 = draws only (split) */
-static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int phase)
+/* Run the list from a0 to a1 with every draw clipped to rows [ylo,yhi] (intersected with the game's clip).
+ * BAND_ALL: all ops, one core; BAND_UPLOADS: the uploads pre-pass of a split; BAND_DRAWS: one band's draws. */
+static void gfx_exec_band(rectangle *clip, int ylo, int yhi, int phase, UINT32 a0, UINT32 a1, int ct)
 {
-	UINT32 addr = m_gfx_addr_shadowcopy & 0x1fffffff;
+	UINT32 addr = a0 ? a0 : (m_gfx_addr_shadowcopy & 0x1fffffff);
 	const int cx0 = m_gfx_clip_x_shadowcopy - EP1C_CLIP_MARGIN;
 	const int cx1 = m_gfx_clip_x_shadowcopy + 320 - 1 + EP1C_CLIP_MARGIN;
 	const int cy0 = m_gfx_clip_y_shadowcopy - EP1C_CLIP_MARGIN;
 	const int cy1 = m_gfx_clip_y_shadowcopy + 240 - 1 + EP1C_CLIP_MARGIN;
-	clip->set(cx0, cx1, MAX(cy0, ylo), MIN(cy1, yhi));
+	if (ct) clip->set(cx0, cx1, MAX(cy0, ylo), MIN(cy1, yhi));
+	else clip->set(0, 0x2000-1, MAX(0, ylo), MIN(0x1000-1, yhi));
 
 	while (1)
 	{
+		if (a1 && addr == a1) return;   /* end of this segment */
 		UINT16 data = READ_NEXT_WORD(&addr);
 
 		switch( data & 0xf000 )
@@ -1091,14 +1383,14 @@ static void gfx_exec_band(rectangle *clip, int ylo, int yhi, bool primary, int p
 					clip->set(0, 0x2000-1, MAX(0, ylo), MIN(0x1000-1, yhi));
 				break;
 
-			case 0x2000:   /* upload: done in the uploads pass (phase!=2) */
+			case 0x2000:
 				addr -= 2;
-				(void)primary; gfx_upload(&addr, phase != 2);
+				gfx_upload(&addr, phase != BAND_DRAWS);
 				break;
 
-			case 0x1000:   /* draw: done in the draw pass(es) (phase!=1) */
+			case 0x1000:
 				addr -= 2;
-				gfx_draw(&addr, clip, phase != 1);
+				gfx_draw(&addr, clip, phase != BAND_UPLOADS);
 				break;
 
 			default:
@@ -1197,7 +1489,7 @@ static void epic12_draw_screen16_24bpp()
 
 	for (INT32 y = 0; y < nScreenHeight; y++)
 	{
-		UINT32 *s0 = &src[((y - scrolly) & heightmask) * 0x2000];
+		UINT32 *s0 = &src[((y - scrolly) & heightmask) * EP1C_PITCH];
 		INT32 sx;
 
 		switch (nBurnBpp) {
@@ -1219,29 +1511,16 @@ static void epic12_draw_screen16_24bpp()
 	}
 }
 
-void epic12_draw_screen(UINT8 &recalc_palette)
+static void comp_rows(int y0, int y1, INT32 scrollx, INT32 scrolly)
 {
-	INT32 scrollx = -m_gfx_scroll_x;
-	INT32 scrolly = -m_gfx_scroll_y;
-
-	if (nBurnBpp != 4) {
-		if (recalc_palette) {
-			pal16_check_init();
-			recalc_palette = 0;
-		}
-
-		epic12_draw_screen16_24bpp();
-		return;
-	}
-
 	UINT32 *dst = (UINT32 *)pBurnDraw;
 	UINT32 *src = (UINT32 *)m_bitmaps;
 	const INT32 heightmask = 0x1000 - 1;
 	const INT32 widthmask  = 0x2000 - 1;
 
-	for (INT32 y = 0; y < nScreenHeight; y++)
+	for (INT32 y = y0; y < y1; y++)
 	{
-		UINT32 *s0 = &src[((y - scrolly) & heightmask) * 0x2000];
+		UINT32 *s0 = &src[((y - scrolly) & heightmask) * EP1C_PITCH];
 		UINT32 *d0 = dst + (y * nScreenWidth);
 		INT32 sx;
 		for (INT32 x = 0; x < nScreenWidth; x+=16)
@@ -1267,6 +1546,110 @@ void epic12_draw_screen(UINT8 &recalc_palette)
 	}
 }
 
+#if EP1C_SPLIT
+/* ---- 32-bit composite on the blit cores ----
+ * The VRAM rows were just written by cores 2 (top band) and 0 (bottom band); copying them out on core 1 pulls every
+ * line across from another core's cache. Instead each blit core copies the screen rows it drew, in parallel, while
+ * core 1 waits. Pure copy: output identical. */
+#define COMP_STACK (16 * 1024)
+struct comp_job { OSThread *th; UINT8 *stack; OSSemaphore start, done; volatile int y0, y1; INT32 sx, sy; };
+static comp_job comp_w[2];   /* [0] = core 2 (top rows), [1] = core 0 (bottom rows) */
+static int comp_ready, comp_failed;
+static volatile int comp_quit;
+static int comp_main(int argc, const char **)
+{
+	comp_job *j = &comp_w[argc];
+	for (;;) {
+		OSWaitSemaphore(&j->start);
+		if (comp_quit) return 0;
+		comp_rows(j->y0, j->y1, j->sx, j->sy);
+		OSSignalSemaphore(&j->done);
+	}
+	return 0;
+}
+static void comp_stop()   // stop and free the workers that were started
+{
+	comp_quit = 1;
+	for (int i = 0; i < 2; i++) {
+		if (comp_w[i].th) {
+			OSSignalSemaphore(&comp_w[i].start);
+			OSJoinThread(comp_w[i].th, NULL);
+		}
+		free(comp_w[i].th);
+		free(comp_w[i].stack);
+		comp_w[i].th = NULL;
+		comp_w[i].stack = NULL;
+	}
+	comp_ready = 0;
+}
+static void comp_init()
+{
+	if (comp_ready || comp_failed) return;
+	static const UINT32 aff[2] = { OS_THREAD_ATTRIB_AFFINITY_CPU2, OS_THREAD_ATTRIB_AFFINITY_CPU0 };
+	comp_quit = 0;
+	for (int i = 0; i < 2; i++) {
+		OSInitSemaphore(&comp_w[i].start, 0);
+		OSInitSemaphore(&comp_w[i].done, 0);
+		comp_w[i].stack = (UINT8 *)memalign(16, COMP_STACK);
+		comp_w[i].th = (OSThread *)memalign(16, sizeof(OSThread));
+		if (!comp_w[i].stack || !comp_w[i].th ||
+		    !OSCreateThread(comp_w[i].th, comp_main, i, NULL, comp_w[i].stack + COMP_STACK, COMP_STACK, 16, aff[i])) {
+			free(comp_w[i].th);   // not started: comp_stop must not join it
+			comp_w[i].th = NULL;
+			comp_stop();
+			comp_failed = 1;   // composite stays on core 1 until the next init
+			return;
+		}
+		OSResumeThread(comp_w[i].th);
+	}
+	comp_ready = 1;
+}
+static void comp_exit()
+{
+	if (comp_ready) comp_stop();
+	comp_failed = 0;
+}
+#endif // EP1C_SPLIT
+
+void epic12_draw_screen(UINT8 &recalc_palette)
+{
+#define COMPOSITE_DONE() do { } while (0)
+	INT32 scrollx = -m_gfx_scroll_x;
+	INT32 scrolly = -m_gfx_scroll_y;
+
+	if (nBurnBpp != 4) {
+		if (recalc_palette) {
+			pal16_check_init();
+			recalc_palette = 0;
+		}
+
+		epic12_draw_screen16_24bpp();
+		COMPOSITE_DONE();
+		return;
+	}
+
+#if EP1C_SPLIT
+	if (g_comp_split && g_blit_split) comp_init();
+	if (g_comp_split && g_blit_split && comp_ready) {
+		/* screen row y shows VRAM row (y - scrolly) & 0xfff: rows above the last split row were drawn by core 2 */
+		int ys = nScreenHeight / 2;
+		if (last_split_mid >= 0) {
+			ys = last_split_mid + scrolly;
+			if (ys < 0) ys = 0;
+			if (ys > nScreenHeight) ys = nScreenHeight;
+		}
+		comp_w[0].y0 = 0;  comp_w[0].y1 = ys;
+		comp_w[1].y0 = ys; comp_w[1].y1 = nScreenHeight;
+		for (int i = 0; i < 2; i++) { comp_w[i].sx = scrollx; comp_w[i].sy = scrolly; OSSignalSemaphore(&comp_w[i].start); }
+		for (int i = 0; i < 2; i++) OSWaitSemaphore(&comp_w[i].done);
+	} else
+#endif
+	{
+		comp_rows(0, nScreenHeight, scrollx, scrolly);
+	}
+	COMPOSITE_DONE();
+#undef COMPOSITE_DONE
+}
 
 
 // 0x18000000 - 0x18000057
@@ -1354,7 +1737,12 @@ void epic12_scan(INT32 nAction, INT32 *pnMin)
 	SCAN_VAR(m_blit_idle_op_bytes);
 
 	if (~nAction & ACB_RUNAHEAD) {
+#if EP1C_PITCH == 0x2000
 		ScanVar(m_bitmaps, m_gfx_size * 4, "epic12 vram");
+#else
+		for (INT32 y = 0; y < 0x1000; y++)   /* same state layout as the unpadded VRAM */
+			ScanVar(m_bitmaps + (size_t)y * EP1C_PITCH, 0x2000 * 4, "epic12 vram");
+#endif
 	}
 	thready.scan();
 }

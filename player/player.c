@@ -32,7 +32,7 @@
 #define SYS_DIR     DATA_DIR "/system"
 #define SAVE_DIR    DATA_DIR "/saves"
 #define STATE_DIR   DATA_DIR "/states"
-#define FBNEO_WIIU_VER "1.0.0.3-U1"	/* shown in the picker header; tracks the release tag */
+#define FBNEO_WIIU_VER "1.0.0.3-U2"	/* shown in the picker header; tracks the release tag */
 
 /* ---- logging: "[fbneo +s.ms] player: ..." to OSReport (dev builds also log over UDP) ---- */
 

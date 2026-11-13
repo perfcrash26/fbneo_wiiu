@@ -1,9 +1,10 @@
 # FBNeo Player (Wii U)
 
-A standalone port of **FinalBurn Neo** (the libretro arcade core) to the Nintendo Wii U, with an
-SDL2 front-end. Focused on Capcom (CPS1 / CPS2 / CPS3), Neo Geo, and Cave CV1000 arcade games.
+Cave CV1000 and CPS3 arcade game support (see table)
 
-**Version 1.0.0.3-U1**
+A standalone build of **FinalBurn Neo** (the libretro arcade core) optimized for Nintendo Wii U.
+
+**Version 1.0.0.3-U2**
 
 See: AI / Claude Disclosure below
 
@@ -11,11 +12,11 @@ See: AI / Claude Disclosure below
 
 | Hardware | Speed |
 |---|---|
-| CPS1 | full speed |
-| CPS2 | full speed |
-| Neo Geo | full speed |
-| CPS3 | usually full speed, with short slowdowns in heavy parts |
-| CV1000 (Cave) | **mostly playable, but not full speed** — dense scenes drop frames and the audio turns scratchy under load |
+| CPS1 | full speed, smooth (vsync) |
+| CPS2 | full speed, smooth (vsync) |
+| CPS3 | full speed, smooth (vsync); short slowdowns in the heaviest parts |
+| Neo Geo | full speed (runs at its own 59.19 Hz, so not vsync-locked) |
+| CV1000 (Cave) | full speed, except heavy scenes |
 
 Romsets must match **FinalBurn Neo 1.0.0.3**. Neo Geo games need `neogeo.zip` (BIOS).
 
@@ -36,10 +37,59 @@ On first launch the app creates its folders under `sd:/wiiu/fbneo_player/`:
 | `roms/` | your romsets |
 | `states/` | save states, one per game |
 | `saves/` | in-game saves (high scores, NVRAM) |
-| `system/` | BIOS / system files |
+| `system/` | BIOS / system files; `system/fbneo/hiscore.dat` is installed on first run |
 
-`config.txt` settings: `content=` (ROM folder, default `roms/`), `frameskip=N` (0–9, default 0),
-`rotate=on|off` (rotate vertical games; default on), `autoload=<set>` (boot straight into one game).
+## Settings (config.txt)
+
+One `key=value` per line in `sd:/wiiu/fbneo_player/config.txt`; restart the app after editing.
+
+| Key | Values (default first) | Effect |
+|---|---|---|
+| `vsync` | `auto`, `1`, `0` | Vsync pacing. `auto` turns it on for games within 0.7% of the TV's refresh rate (59.94 Hz, or 50 Hz in 576i) and off for the rest, which then run at their own rate. See the note below. |
+| `aspect` | `auto`, `pixel` | `auto` shows games at the aspect FinalBurn Neo reports (4:3); `pixel` uses square pixels. |
+| `filter` | `smooth`, `sharp` | Scaling: linear (`smooth`) or nearest-neighbour (`sharp`). |
+| `screens` | `both`, `tv`, `gamepad` | Which screens show the game at start; hold ZL + ZR and press X to change it in game. |
+| `hiscores` | `1`, `0` | Save high scores for games listed in `hiscore.dat`. |
+| `map_<button>` | a button name | Makes a button act as another, e.g. `map_y=a` (Y does what A does; A still works). |
+| `turbo` | button list | Autofire while held, e.g. `turbo=a,x`. |
+| `turbo_hz` | `15` (1–30) | Autofire presses per second. |
+| `frameskip` | `0` (0–9) | Draw only 1 of every N+1 frames; can help CPU-bound games. |
+| `autoskip` | `0` (0–100) | Automatic frameskip: skip drawing while the audio queue is below N% of its target. |
+| `rotate` | `on`, `off` | Rotate vertical (TATE) games. |
+| `content` | path | ROM folder (default `roms/`). |
+| `autoload` | set name | Boot straight into one game, skipping the list. |
+| `depth32` | `auto`, `1`, `0` | 32-bit output. `auto` = CV1000 only (faster there); `1` for all games makes some show black. |
+
+Button names for `map_` and `turbo`: `a b x y l r zl zr l3 r3`. Start (**+**), Coin (**−**) and
+the d-pad can't be remapped.
+
+**Vsync note:** with vsync on, a game that can't hold full speed on the console stutters and its sound
+crackles, because every late frame waits for the next TV refresh. Shinobi is one: it runs at about 54 fps
+with vsync. That is why `vsync` is a setting — use `vsync=0` for such games.
+
+TBD: an in-app settings screen for these options.
+
+## Controls
+
+| Action | Menu | In game |
+|---|---|---|
+| Move | D-pad or left stick (Up/Down) | D-pad or left stick |
+| Page up / down | L / R | — |
+| Previous / next letter | ZL / ZR | — |
+| Select / play | A or B | — |
+| Game buttons | — | A, B, X, Y, L, R, ZL, ZR, L3, R3 |
+| Start / Coin | — | **+** start · **−** coin |
+| Help | Y | — |
+| Leave help page | A or B | — |
+| Save state | — | hold ZL + ZR, press Y |
+| Load state | — | hold ZL + ZR, press A |
+| Screens (TV + GamePad / TV / GamePad) | — | hold ZL + ZR, press X |
+| Back to menu | — | hold **+** and **−** together (~0.5 s) |
+| Quit the app | hold **+** and **−** together | — |
+
+Player 1 uses the first controller (GamePad, Pro Controller, or Wii Remote + Classic Controller),
+player 2 the second. Save states and hotkeys use player 1's controller. HOME does not exit; use **+**
+and **−**.
 
 ## Optimizations
 
@@ -47,43 +97,34 @@ The headline emulation-speed work, per platform:
 
 - **CV1000 — threaded sprite blitter.** The Cave blitter (`epic12`) originally ran inline on the
   emulation thread. It was first moved onto its own core, then **split across two cores** so the two
-  halves of each frame render in parallel. This is what took CV1000 from a slideshow to playable.
+  halves of each frame render in parallel. A per-frame safety check finds draws that cross the split
+  (one half reading what the other half writes) and orders them with sync points, or runs that frame on
+  one core.
+- **CV1000 — VRAM row padding.** The emulator stores each VRAM row with 1 KB of padding, so rows no
+  longer map to the same CPU cache sets. This is the emulator's own memory layout, not the hardware's;
+  video, audio and save states are bit-identical.
+- **CV1000 — frame composite and sound on other cores.** The 32-bit frame composite is split across the
+  two blit cores, and the YMZ770 sound chip renders on core 0 from a queue of register writes.
 - **CPS3 — character-DMA bulk fill.** Replaced byte-by-byte RLE character decompression with a bulk
   fill, trimming the worst DMA-heavy frames.
 - **Neo Geo — palette rebuild fix.** The full palette was being rebuilt every frame; now it is
   recalculated only when it actually changes.
+- **All games — frame pacing.** Vsync pacing for games near the TV's rate, with the audio rate nudged
+  (up to ±0.8%) so the sound queue neither drains nor grows; the others are paced by the audio queue.
 
-Supporting CV1000 CPU-side and audio work along the way: an SH-3 interpreter dispatch table, a
-bit-exact timer fast-path, and — most important for usability — **re-syncing the frame loop to the
-audio queue**, which stopped the underruns that had made the sound unusable.
+Supporting CV1000 CPU-side work along the way: an SH-3 interpreter dispatch table and a bit-exact timer
+fast-path. The code changes are Wii U specific (threading, core pinning, etc.) and are not appropriate
+for upstream.
 
 ## Features
 
-- **Game picker** with on-screen help, controller navigation, and per-system labels
+- **Game picker** with full game names, on-screen help, controller navigation, and per-system labels
 - **Save states** — compressed and near-instant, with an in-game quicksave / load combo
-- **Frameskip** option (via config)
+- **High scores** saved (FinalBurn Neo `hiscore.dat`)
+- **Button remapping and autofire**, **frameskip** and other options (see Settings)
+- **TV / GamePad screen selection**, 4:3 or square-pixel display, smooth or sharp scaling
 - **Two players** — GamePad, Pro Controller, or Wiimote + Classic Controller
 - Screen rotation for vertical (TATE) games, full-screen scaling on 1080p displays, and a bundled font
-
-
-
-## Controls
-
-| Action | Menu | In game |
-|---|---|---|
-| Move | D-pad or left stick (Up/Down) | D-pad or left stick |
-| Select / play | A or B | — |
-| Game buttons | — | A, B, X, Y, L, R, ZL, ZR |
-| Start / Coin | — | **+** start · **−** coin |
-| Help | Y | — |
-| Leave help page | A or B | — |
-| Save state | — | hold ZL + ZR, press Y |
-| Load state | — | hold ZL + ZR, press A |
-| Back to menu | — | hold **+** and **−** together (~0.5 s) |
-| Quit the app | hold **+** and **−** together | — |
-
-Player 1 uses the first controller (GamePad, Pro Controller, or Wii Remote + Classic Controller),
-player 2 the second. Save states use player 1's controller. HOME does not exit; use **+** and **−**.
 
 ## Building for Wii U
 
@@ -110,70 +151,69 @@ The build also writes `player/release/`, the files to publish: the wuhb, `LICENS
 - **Libraries & font** — SDL2_ttf, libretro-common, FreeType, HarfBuzz, Brotli, bzip2, libpng, zlib,
   and the Roboto font; see `THIRD-PARTY-NOTICES.txt`. Portions of this software are copyright © The
   FreeType Project (https://freetype.org). All rights reserved.
-- **Wii U port & optimizations** — a contributor, with Claude (see below).
+- **Wii U optimized build** — perfcrash26, with Claude (see below).
+
 ## Known issues
 
-- **Threaded-blitter artifacts** — the two-core blitter split introduced some rendering artifacts,
-  seen in the **deathsml** stage-select menu; mitigated with a single-threaded texture-upload
-  pre-pass, and worth re-checking on newly added games.
-- **CV1000 is not full speed** — heavy scenes drop frames, and the audio stays clear only under light
-  CPU load; under heavy load it becomes scratchy. This is a performance tail, not an audio-backend bug.
-  Total CPU use is no longer the bottleneck: since splitting the blitter into 2 threads across 2 cores,
-  there is plenty of unused capacity summed across the three cores. What limits each frame is the
-  per-core speed of its steps, which run in order (emulated CPU, then the sprite blit, then the
-  composite), so their times add up. The unused capacity sits in the gaps where a core waits on
-  another core's step. The blit, the longest step, is compute-bound: its time is set by how fast a
-  core executes the per-pixel blend, not by memory bandwidth or latency. Short of more threads or a CPU
-  recompiler, only optimization of blitter code paths will improve performance further.
+- **CV1000 heavy scenes drop frames** — they are now limited by the emulated SH-3 CPU (an interpreter),
+  which on its own takes most of the 16.7 ms frame in the heaviest scenes; the sound crackles where the
+  frame rate drops.
+- **One-core fallback** — frames whose drawing crosses the two-core split too often run the blit on one
+  core, which is slower in those scenes.
+- **Vsync and slow games** — see the vsync note under Settings (e.g. Shinobi: use `vsync=0`).
+- **Rare crash when leaving a game** — seen once in about 135 game exits during testing.
+- **Rare audio stall** — seen once after many game switches in one session; if the sound stops,
+  restart the app.
 
 ## Future work
 
-**Goal: CV1000 normal gameplay with clear sound, near full speed on most games.** Our rough estimate
-of the odds is **~60%**: the blitter-bound games (e.g. Deathsmiles, DoDonPachi Dai-Fukkatsu) are already
-close and should get there with inner-loop blitter work, while the CPU-heavy games (e.g. Muchi Muchi
-Pork, Espgaluda II) likely also need a CPU recompiler.
+**Goal: CV1000 normal gameplay with clear sound at full speed on most games**, including the heaviest
+scenes.
 
 Hardware profiling points the way:
 
-- **Where the work runs under peak load** (Deathsmiles heavy gameplay, measured on the console):
-  core 1 runs the emulated CPU and the frame composite (~59% busy); core 2 draws the top half of the
-  sprite blit (~61%); core 0, which the system also uses, draws the bottom half (~46%). The GPU only
-  scales and presents the finished frame (~3 ms per frame); its load wasn't measured but is light.
-  The cores aren't pegged because each frame is a chain: CPU, then the blit, then the composite. So
-  there are limited options for more parallelism: mainly a third blit worker on core 1, which mostly
-  waits during the blit (item 1), and the sound chips (item 4). The remaining gains are from
-  optimizing the work.
-
-- **CV1000's gameplay bottleneck is the sprite blitter, and it is compute-bound** — it moves only
-  ~5–8% of the console's memory bandwidth, so it is not limited by memory speed or latency. Cache
-  prefetch and a work-stealing tile queue were tested or analyzed and don't help: the two-core split
-  is already well balanced, and the frame composite already runs on the third core. The cost is the
-  per-pixel alpha blend itself (dependent palette lookups on an in-order CPU).
-- **Elsewhere the ceiling is the interpreted CPU cores** — SH-3 on CV1000, SH-2 on CPS3 and Psikyo.
+- **The emulated SH-3 CPU is now the CV1000 bottleneck.** About two thirds of its time goes to the
+  interpreter's dispatch loop (fetching and dispatching each instruction), not to the instructions'
+  own work. The CPU step has to come down by roughly a third (Deathsmiles) to a half (Ibara's peaks)
+  for full speed in the worst scenes.
+- **The sprite blit is compute-bound** — the per-pixel alpha blend on an in-order CPU, not memory
+  bandwidth.
 
 Next steps:
 
-1. **Use the idle CPU time** — replace the two fixed blit bands with a shared queue of small tiles
-   that each core pulls from whenever it's free: cores 0 and 2 from the start of the blit, and core 1
-   (the emulation core) as soon as it starts waiting for the blit. Core 0, which the system also uses,
-   simply takes fewer tiles when the system needs it, so no fixed limit is needed. Estimated ~10–18%
-   off the frames that lag, pending a measurement of how much of core 1's wait overlaps the blit.
-2. **Inner-loop blitter optimization** — software-pipeline the alpha blend (two pixels interleaved so
-   the dependent palette lookups overlap) and trim the hottest blend path. Estimated ~20–30% off the
-   CV1000 blit, which should reduce the frame drops and audio scratch. Combines with item 1.
-3. **CPU recompiler (JIT)** — a dynamic recompiler for the SH-2 / SH-3 cores, the biggest lever for
-   the interpreter-bound families (CPS3, Psikyo, and CV1000's CPU side). A large undertaking, gated on
-   a feasibility pass.
-4. **Sound chips on a separate core** — move audio generation off the CPU timeslice. A large,
-   structural change, since FBNeo renders audio inside the CPU timeslice loop.
-5. **More controllers** — support for 4-player games (the Wii U takes a GamePad plus up to four
+1. **Faster SH-3 interpreter loop** — a threaded interpreter (less work per dispatched instruction),
+   then possibly a recompiler (JIT) for the SH-2 / SH-3 cores, which would also help CPS3 and Psikyo.
+2. **Inner-loop blitter optimization** — software-pipeline the alpha blend and trim the hottest blend
+   path.
+3. **Use the idle CPU time** — a shared queue of small blit tiles that every core pulls from when free,
+   instead of two fixed bands.
+4. **In-app settings screen** for the `config.txt` options, and an on-screen FPS display.
+5. **Display filters** — CRT / scanline shaders on the GPU.
+6. **More controllers** — support for 4-player games (the Wii U takes a GamePad plus up to four
    Wii Remotes / Pro Controllers, so up to 5 inputs).
 
 ## AI / Claude Disclosure
 
-The Wii U port in this fork — the threaded CV1000 blitter, the CPS3 and Neo Geo optimizations, the
+The Wii U build in this fork — the threaded CV1000 blitter, the CPS3 and Neo Geo optimizations, the
 SDL2 player, and the build and profiling tooling — was developed by a contributor working with
-**Claude (Anthropic's AI coding assistant, via Claude Code)**. Claude wrote and edited the code, ran
-the build-and-test cycles, and analyzed the hardware profiling; every change was directed, reviewed,
-and tested on real hardware. The FinalBurn Neo emulator and its libretro core are the work of Team
-FBNeo (see Credits).
+**Claude (Anthropic's AI coding assistant, via Claude Code)**. The contributor did the architectural
+review, the instrumentation pass and its analysis, and the optimization plan, then set out how Claude
+should approach the project and directed the implementation step by step. Claude wrote and edited the
+code, ran the build-and-test cycles, and analyzed the hardware profiling; every change was reviewed and
+tested on real hardware. The FinalBurn Neo emulator and its libretro core are the work of Team FBNeo
+(see Credits).
+
+## What's new in U2
+
+- **Smooth frames on games near 60 Hz** — vsync pacing, chosen per game (`vsync=auto`). CPS1/2/3,
+  Toaplan, Pac-Man and CV1000 now present every frame one TV refresh apart.
+- **CV1000 faster** — VRAM row padding (fewer cache conflicts), a safety check that keeps the
+  two-core blitter correct, the frame composite split across two cores, and the YMZ770 sound chip on
+  its own core.
+- **Full game names** in the list, sorted by title; L/R to page, ZL/ZR to jump by letter; the list
+  reopens on the last game played.
+- **High scores** saved for games in FinalBurn Neo's `hiscore.dat` (bundled).
+- **4:3 display** by default, a sharp (nearest-neighbour) scaling option, and **TV / GamePad
+  screen selection** (hold ZL + ZR, press X).
+- **Button remapping and autofire** from `config.txt`.
+- Fixed: list rows sometimes showed another row's text; the in-game clock was stuck at a fixed date.

@@ -9,7 +9,7 @@
  * What it provides: fullscreen window + renderer + font, up to 2 game controllers with hot-plug
  * and a START+BACK "leave" combo, a config.txt it creates on first run, a scan of a content
  * directory for one file extension, an on-screen scrolling menu with optional per-item labels,
- * an install/help screen (shown when the folder is empty and from a Help entry), a transient
+ * an install/help screen (shown when the folder is empty, and on Y), a transient
  * message box, and a rotation-aware framebuffer blit. The host app keeps main() and its own
  * content loop; the picker is a toolkit, not a framework.
  *
@@ -19,7 +19,9 @@
 #define PICKER_H
 
 #include <SDL.h>
-#include <stdint.h>
+
+#define PICKER_TRIGGER_ON 16000   /* ZL/ZR axis value that counts as held (menu and hotkey combos) */
+#define PICKER_STICK_DZ   12000   /* left-stick dead zone for directions */
 
 typedef struct {
     const char *app_name;      /* header text, e.g. "FBNeo" */
@@ -31,10 +33,12 @@ typedef struct {
     const char *help_extra;    /* optional extra line on the help screen (e.g. version note), or NULL */
     const char *const *controls; /* optional NULL-terminated lines describing the app's in-game button
                                   * map, shown on the help screen under the generic menu controls; or NULL */
+    const char *(*title_for)(const char *name); /* optional display title (list shows it, sorted by it,
+                                  * with the item name dimmed beside it), or NULL to list item names */
 } picker_cfg;
 
 /* Bring up SDL (video+audio+gamecontroller), a fullscreen window+renderer, the font, controllers,
- * and read/create <data_dir>/<app>/config.txt. Returns 0 on success. Keeps a pointer to cfg. */
+ * and read/create <data_dir>/config.txt. Returns 0 on success. Keeps a pointer to cfg. */
 int  picker_init(const picker_cfg *cfg);
 void picker_quit(void);                 /* close font, controllers, SDL */
 
@@ -43,6 +47,7 @@ const char *picker_content_dir(void);   /* "content="/"roms=" line, or <data_dir
 const char *picker_autoload(void);      /* "autoload=" value, or "" */
 int         picker_rotate(void);         /* "rotate=" (1 default; 0 if "off") */
 int         picker_cfg_int(const char *key, int def); /* read a host-defined integer "key=" from config.txt */
+const char *picker_cfg_str(const char *key, const char *def, char *buf, size_t size); /* same, string value */
 
 /* Scan the content dir, show the menu (or the help/empty screen), and return the chosen item's
  * name WITHOUT extension (pointer valid until the next picker_run), or NULL if the user quit. */
@@ -57,6 +62,16 @@ SDL_GameController *picker_pad(int port); /* port 0 or 1, or NULL if not connect
  * (0..3); pass 0 to disable. sdl_fmt is an SDL_PIXELFORMAT_*. */
 void picker_present(const void *data, unsigned w, unsigned h, unsigned pitch,
                     Uint32 sdl_fmt, unsigned rot_ccw);
+
+/* Display settings for picker_present (any time):
+ * aspect: the image's intended display aspect (e.g. 4/3, as libretro reports it), or 0 = square pixels.
+ *         Given for either orientation; the picker matches it to the shown (rotated) image.
+ * filter: 0 = smooth (linear) scaling, 1 = sharp (nearest).
+ * screens: 0 = TV + GamePad, 1 = TV only, 2 = GamePad only (the other screen goes dark). */
+void picker_set_aspect(double aspect);
+void picker_set_filter(int sharp);
+void picker_set_screens(int mode);
+int  picker_screens(void);
 
 SDL_Renderer *picker_renderer(void);     /* for host-drawn screens, if needed */
 void picker_message(const char *line1, const char *line2); /* ~1.6s on-screen message */

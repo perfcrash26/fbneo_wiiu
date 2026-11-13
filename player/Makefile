@@ -25,18 +25,20 @@ SDL_LIBS   := $(shell $(PKGCFG) --libs --static SDL2_ttf)
 
 wiiu: fbneo_player.rpx
 
-# package a Wii U menu app: FBNeo icon + Roboto font + license files bundled in /content
+# package a Wii U menu app: FBNeo icon + Roboto font + FBNeo's hiscore.dat + license files bundled in /content
 wuhb: fbneo_player.rpx
 	rm -rf build_content && mkdir build_content && cp -r content/. build_content/
+	cp ../metadata/hiscore.dat build_content/
 	sh make-notices.sh build_content
 	wuhbtool fbneo_player.rpx fbneo_player.wuhb \
 	    --name "FBNeo Player" --short-name FBNeoPlay --author fbneo_wiiu \
 	    --icon=icon.png --content=build_content
 
+# PLAYER_CFLAGS: optional extra compiler flags for player.c (empty for a release build)
 fbneo_player.elf: player.c picker/picker.c picker/picker.h fbneo_names.cpp $(CORE_A)
-	$(PPC_CC) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -D__WUT__ $(INCLUDES) $(SDL_CFLAGS) -isystem $(WUT_ROOT)/include -c player.c -o player_wiiu.o
+	$(PPC_CC) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -D__WUT__ $(INCLUDES) $(SDL_CFLAGS) $(PLAYER_CFLAGS) -isystem $(WUT_ROOT)/include -c player.c -o player_wiiu.o
 	$(PPC_CC) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -D__WUT__ $(SDL_CFLAGS) -isystem $(WUT_ROOT)/include -c picker/picker.c -o picker_wiiu.o
-	$(PPC_CXX) -O2 $(PPC_ARCH) -D__WIIU__ -c fbneo_names.cpp -o fbneo_names.o
+	$(PPC_CXX) -O2 -Wall $(PPC_ARCH) -D__WIIU__ -c fbneo_names.cpp -o fbneo_names.o
 	$(PPC_CC) -O2 $(PPC_ARCH) -D__WIIU__ -D__WUT__ -DWIIU $(INCLUDES) -isystem $(WUT_ROOT)/include -c $(LRC_SRC) && \
 	    ar rcs lrc_wiiu.a $(notdir $(LRC_SRC:.c=.o)) && rm -f $(notdir $(LRC_SRC:.c=.o))
 	$(PPC_CXX) $(PPC_ARCH) -specs=$(WUT_ROOT)/share/wut.specs -L$(WUT_ROOT)/lib player_wiiu.o picker_wiiu.o fbneo_names.o $(CORE_A) lrc_wiiu.a $(SDL_LIBS) -lwut -lm -o $@
